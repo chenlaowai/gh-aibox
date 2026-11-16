@@ -140,6 +140,10 @@ private:
         av_dict_free(&opts);
         if (ret < 0) {
             fail("ingest open: " + std::string(av_err2str(ret)));
+            // A failed avformat_open_input can still leave a partially
+            // allocated context; every failed ISC retry would leak it and the
+            // process RSS grew ~2 MB/min until this was closed.
+            if (in) avformat_close_input(&in);
             cleanup(nullptr, nullptr, nullptr, nullptr, sock_dec_, sock_rec_);
             return;
         }
@@ -266,9 +270,9 @@ private:
     done:
         if (bsf) av_bsf_free(&bsf);
         if (out) avformat_free_context(out);
+        avio_context_free(&avio);
         if (aviobuf) av_free(aviobuf);
         if (in) avformat_close_input(&in);
-        avio_context_free(&avio);
         cleanup(nullptr, nullptr, nullptr, nullptr, sock_dec_, sock_rec_);
         sock_dec_ = sock_rec_ = -1;
         running_ = false;
