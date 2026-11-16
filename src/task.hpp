@@ -19,6 +19,7 @@
 #include <opencv2/freetype.hpp>
 #include "common.hpp"
 #include "alarm_recorder.hpp"
+#include "ingest_bridge.hpp"
 #include "decode_pool.hpp"
 #include "isc.hpp"
 #include "model.hpp"
@@ -4028,6 +4029,34 @@ private:
         // Fork/exec instead of posix_spawn: the child must close every
         // inherited AI socket. Otherwise a gateway keeps a previous task's
         // UDP decoder port bound (EADDRINUSE) and only a few channels work.
+        if (inproc_ingest_enabled()) {
+            // Same contract as the ffmpeg child: pull the source, mux MPEG-TS,
+            // fan out to the decoder port and the packet-ring port.
+            bridge_.start(upstream, p_dec, p_rec,
+                          gateway_bsf_hevc_ && upstream_hevc_ == 1, file_source_);
+            source_url_ = dec;
+            ring_url_ = rec;
+            started_ms_ = now_ms();
+            gateway_pid_ = "inproc";
+            bool got = false;
+            const int attempts = 10;
+            for (int i = 0; i < attempts && !got; ++i) {
+                got = udp_has_data(p_dec, 4000);
+                if (!got && !bridge_.running()) break;
+                if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            if (!got) {
+                const std::string err = bridge_.error();
+                log_warn(cfg_.task_id + " ingest bridge no video: " +
+                         (err.empty() ? upstream : err));
+                set_stream_error(err.empty() ? ("upstream no video: " + upstream) : err);
+                stop_gateway();
+                return false;
+            }
+            log_info(cfg_.task_id + " ingest bridge pid=none udp " +
+                     std::to_string(p_dec) + "/" + std::to_string(p_rec));
+            return true;
+        }
         pid_t pid = fork();
         if (pid == 0) {
             setsid();
@@ -4227,6 +4256,7 @@ private:
         return false;
     }
     void stop_gateway() {
+        bridge_.stop();
         if (gateway_pid_num_ > 0) {
             ::kill(-gateway_pid_num_, SIGKILL);
             ::kill(gateway_pid_num_, SIGKILL);
@@ -4630,6 +4660,16 @@ private:
     int isc_rot_ = 0;                    // rotate ISC candidates after codec failures
     int upstream_hevc_ = -1;             // -1 unknown, 1 hevc, 0 other
     bool gateway_bsf_hevc_ = false;       // pass hevc_mp4toannexb to the gateway
+    // In-process ingest (production keeps the pull/remux stage in its own
+    // process): replaces the per-channel ffmpeg child with libavformat.
+    IngestBridge bridge_;
+    bool inproc_ingest_enabled() const {
+        static const bool on = [] {
+            const char* v = std::getenv("AIDETECT_INPROC_INGEST");
+            return !v || std::string(v) != "0";
+        }();
+        return on;
+    }
     int64_t target_ttl_ms_ = 2000;       // alarm target survives this gap
     std::string last_badge_label_;
     int64_t last_badge_ms_ = 0;

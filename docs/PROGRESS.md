@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 69
+iteration: 71
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,37 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 71 — 2026-11-16 — 进程内拉流稳定版：ISC RTSP 超时调到 20s，36 路单体 29 ok / ffmpeg=0
+
+- **调参过程**：
+  - 去掉 `fflags=nobuffer/low_delay/max_delay`（完全照抄 CLI）→ 反而更差（10 ok / 22 connecting），
+    说明低延迟选项是必要的；
+  - 保留低延迟选项、把 RTSP `stimeout` 从 5s 提到 **20s** → ISC 通道可正常建流（25K 704×576、
+    排水渠1 640×360 均恢复），36 路回到 **29 ok / 7 connecting**。
+- **当前部署 `aidetect_bridge5`（md5 `8f3fdbe7…`）**：**ffmpeg 进程 0**、线程 202、RSS **554MB**、
+  dmabuf 744（10 分钟基本持平）、合流 8.6~9.2fps、`RestartCount=0`；
+  直连相机（数智/数值技术中心 2560×1440）与 ISC（25K/排水渠1）均验证有画面（含抓图）。
+- **与混合形态的差异**：混合 33 ok，单体 29 ok，差的 4 路全部是 ISC `5XX`/`I/O error`（ISC 侧会话/限流），
+  非本项目解码或桥接缺陷；这些通道在网关形态下也会周期性轮换。
+- **告警视频**：桥接把同一份 TS 同时扇出到解码端口和告警环端口（等价原 ffmpeg 双输出），
+  录制链路随之保持进程内，无额外子进程。
+
+### 迭代 70 — 2026-11-16 — 36 路单体架构落地：libavformat 进程内拉流/转封装，ffmpeg 进程归零
+
+- **实现**：新增 `src/ingest_bridge.hpp`（约 300 行）——用 libavformat 在**进程内**完成
+  “打开源 → 读包 → mpegts 封装 → 本地 UDP”，替换原来的每路 ffmpeg 子进程；一份输出通过
+  自定义 `avio` 写回调同时扇出到解码端口和告警环端口，等价于原来 ffmpeg 的两路输出。
+  - 选项对齐原网关：`rtsp_transport=tcp`、`stimeout=5s`、`fflags=nobuffer`、`max_delay=500ms`、
+    `flags=low_delay`；HEVC 走 `hevc_mp4toannexb`（BSD 过滤器链）；MP4 测试源 EOF 后**重新打开**
+    实现循环播放（seek 会因时间戳回退被 mpegts 拒绝）。
+  - `AIDETECT_INPROC_INGEST`（默认开）控制；关闭即回退旧 ffmpeg 网关，便于对比。
+- **实测（稳定 10 分钟以上）**：**ffmpeg 进程 = 0**、线程 204→207、RSS **528MB**、dmabuf 778、
+  36 路 **29 ok / 7 connecting**、合流 **8.6~9.2fps**、单通道 1280×720 预览正常。
+- **与混合形态差异**：多出的 4 路失败全部是 ISC（`ingest open: 5XX` / `I/O error`），属 ISC 侧限流/
+  会话问题，非解码问题；网关形态下同一时段也会出现同类候选轮换。
+- **意义**：至此“取流 + 转封装 + 解码 + 推理 + 预览 + 合流 + 告警环”全部在 **一个 `aidetect` 进程**内，
+  与生产“单体 App”的形态一致（生产的差异只在 media_sdk 与自研 dump4）。
 
 ### 迭代 69 — 2026-11-16 — 单体化两次尝试的硬结论：本机 sail 解码器撑不住 36 路直连；回归混合形态
 
