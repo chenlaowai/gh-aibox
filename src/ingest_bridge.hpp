@@ -21,6 +21,7 @@ extern "C" {
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -74,11 +75,20 @@ private:
     }
 
     static int write_cb(void* opaque, uint8_t* buf, int size) {
+        // The mpegts muxer hands us whatever it buffered (up to 64 KB).  UDP
+        // datagrams above the MTU are fragmented and the decoder reads with
+        // pkt_size=1316, so it sees truncated TS packets and never produces a
+        // frame.  Slice every write into MTU-safe datagrams, like ffmpeg's
+        // udp protocol does.
+        constexpr int kChunk = 1316;
         auto* self = static_cast<IngestBridge*>(opaque);
-        if (self->sock_dec_ >= 0)
-            ::send(self->sock_dec_, buf, size, MSG_NOSIGNAL);
-        if (self->sock_rec_ >= 0)
-            ::send(self->sock_rec_, buf, size, MSG_NOSIGNAL);
+        for (int off = 0; off < size; off += kChunk) {
+            const int n = std::min(kChunk, size - off);
+            if (self->sock_dec_ >= 0)
+                ::send(self->sock_dec_, buf + off, n, MSG_NOSIGNAL);
+            if (self->sock_rec_ >= 0)
+                ::send(self->sock_rec_, buf + off, n, MSG_NOSIGNAL);
+        }
         return size;
     }
 
