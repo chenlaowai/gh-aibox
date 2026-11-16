@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 65
+iteration: 66
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,17 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 66 — 2026-11-16 — 恢复生产可用状态；记录部署楔死（KI-029）与当前版本
+
+- **部署 v1.0.2 时再次触发 KI-029**：旧容器 PID1 变僵尸、`aidetect` 进程进入 **D 状态**（驱动不可中断），
+  `docker stop/rm` 全部挂死（8 分钟无返回），`:9000` 残留 LISTEN；只能 **重启盒子** 才清除。
+- **恢复步骤**（已验证）：重启后 `aidetect` 变 Dead、`aidetect_new` Created → `docker rm -f aidetect` →
+  `docker rename aidetect_new aidetect` → `docker start`；30s 后 HTTP 401（正常鉴权）、任务自动对账。
+- **当前状态**：36 路 **34 ok / 2 connecting**；`ffmpeg` 仅 **8 个**（非 ISC 全进程内解码）、
+  线程 197、RSS **585MB**；Web `page=200 / api=200`；合流 6.2~7.9fps；单通道 1280×720 正常。
+- **注意**：进程进入 D 状态是驱动层问题，任何“先 stop 再 rm”的部署都会卡住；后续部署一律用
+  “create 新容器 → cp → 优雅 stop 带短超时 → rm -f（失败则直接 reboot）”的流程，并预留 10 分钟窗口。
 
 ### 迭代 65 — 2026-11-16 — 单体化推进：验证 sail 直连解码，混合模式上线（24 路进程内 + 10 路 ISC 走网关）
 
