@@ -760,6 +760,8 @@ private:
             while (!stop_) {
                 if (gateway_pid_.empty()) {
                     bool gateway_ok = true;
+                    // ISC URLs are single-use; opening them directly needs a re-resolve
+                    // per attempt, which is not implemented yet, so ISC keeps the gateway.
                     if (direct_decode_enabled() && !isc_source) {
                         source_url_ = direct_decode_url();
                         gateway_ok = !source_url_.empty();
@@ -861,6 +863,8 @@ private:
                         decoder_ = nullptr;
                         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
                         bool gateway_ok = true;
+                        // ISC URLs are single-use; opening them directly needs a re-resolve
+                        // per attempt, which is not implemented yet, so ISC keeps the gateway.
                         if (direct_decode_enabled() && !isc_source) {
                             source_url_ = direct_decode_url();
                             gateway_ok = !source_url_.empty();

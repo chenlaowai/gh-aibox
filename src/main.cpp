@@ -28,6 +28,12 @@ int main(int argc, char** argv) {
         }
         if (url.empty() || out.empty()) return 2;
         try {
+    // In-process decode (single-process architecture): the sail decoder opens
+    // rtsp:// URLs directly, but it needs TCP transport for the ISC gateway -
+    // without it every ISC URL fails with AVERROR_INVALIDDATA.  This must run
+    // before the first Decoder is constructed.
+    sail::set_decoder_env("rtsp_transport", "tcp");
+    sail::set_decoder_env("stimeout", "5000000");
             sail::Handle handle(0);
             sail::Decoder decoder(url, true, 0);
             if (!decoder.is_opened()) return 3;
