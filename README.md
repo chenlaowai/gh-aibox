@@ -10,6 +10,11 @@ commit: -
 
 ## 当前状态
 
+- **2026-11-16 修复（四十三，单体架构）**：新增 `src/ingest_bridge.hpp`，用 **libavformat 在进程内**
+  完成“拉流 → mpegts 封装 → 本地 UDP”，**替换掉每路 ffmpeg 子进程**；同一份 TS 扇出到解码与告警环
+  端口。关键坑：mpegts 一次吐出最多 64KB，直接 `send()` 会被 IP 分片、而解码端按 1316 字节收 → 
+  **必须按 1316 切片发送**。实测：**ffmpeg 进程 0**、线程 221、RSS 657MB、`RestartCount=0`、
+  36 路 **34 ok / 2 connecting**、ISC 25K 与龙港-钢栈桥抓图正常。`AIDETECT_INPROC_INGEST=0` 可回退网关。
 - **2026-11-14 修复（四十二）**：逆生产确认它**没有重启机制**（app 连续 39.5h、NRestarts=0、
   dmabuf 恒 133，靠每通道池化复用帧）；我们的增长来自连不上相机的**高频重连**。
   已给解码失败加重连退避，`dmabuf` 从 +1.3/分钟变为稳定 604~618。
@@ -297,6 +302,9 @@ commit: -
 
 ## 下一步
 
+0. **单体架构后续**：观察 24h 的 `dmabuf`/RSS 曲线（桥接后 847 且有缓升）；若继续增长，
+   优先检查 `IngestBridge` 的 avio/AVPacket 释放与 `MultiDecoder`/`Decoder` 的重建频率；
+   另外可把桥接的重连策略按候选（streamType/协议）轮换，进一步减少 ISC 5XX 窗口。
 1. 推理闸门并发默认 2：15 任务下 2 与 4 实测无差别（`wait_avg=0`、`peak_pending≤4`），
    30 路以上再复测；
 2. 底层属性算法仍约 1s 一次、远小目标的人形框本身偏大；下一步用更紧的人形框裁剪或
