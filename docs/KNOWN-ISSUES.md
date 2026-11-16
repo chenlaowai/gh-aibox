@@ -10,6 +10,16 @@ commit: -
 
 ## 已知缺陷
 
+### KI-038 单体桥接后 RSS 缓升（约 3~4MB/min）
+
+- 现象：`AIDETECT_INPROC_INGEST=1` 单进程运行时，RSS 从 640MB 起约 **3~4MB/min** 上升
+  （dmabuf 同步缓升，805→814/17min）；混合网关形态约 0.5MB/min。
+- 已修：`avformat_open_input` 失败路径未 `avformat_close_input`（每次 ISC 失败重试泄漏一个
+  部分构造的 AVFormatContext），以及 `avio_context_free` 与 `av_free(buffer)` 的调用顺序。
+- 仍未定位：修完后仍以 ~3.8MB/min 增长。下一步用 `valgrind --tool=massif`，或先停掉 2 路
+  持续重试的 ISC 通道做对照，判断是桥接重试还是解码/预览路径固有。
+- 兜底：资源看门狗（dmabuf>1000 / RSS>2000MB）自重启进程，`--restart unless-stopped` 恢复。
+
 ### KI-001 INT8 反光衣 bmodel 分类输出全为 0，FP16 正常
 
 - 现象：用盒子上的 `yolov11s_int8_1b_back_reflectivejacket_1.bmodel` 推理，输出 `class_max=0.000000 class_nonzero=0`，8400 个 anchor 的两个分类列全是 0，因此 demo 一个框都出不来。FP16 新权重 `yolov11s_fp16_1b_back_reflectivejacket_1.bmodel` 在同一张图、同一套 letterbox 下 `class_max=0.913574`，62 个 anchor 超过 0.25。
