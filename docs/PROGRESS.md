@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 66
+iteration: 67
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,22 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 67 — 2026-11-16 — 全量进程内解码受限于 VPU：36 个独立 sail::Decoder 会饿死；保留混合形态
+
+- **尝试**：把 ISC 也切到进程内直连（`set_decoder_env("rtsp_transport","tcp")` + `stimeout=10s`
+  + 每次重连重新 resolve + 打开/读失败轮换候选），部署后 `ffmpeg=0`、线程 176、RSS 425MB ——
+  但 36 路只有 **13 ok / 18 stalled / 5 connecting**。
+- **现象**：stalled 的任务 `everFrame=true`、`decoder opened shape=1,3,1440,2560`、`high-res slot`
+  都正常，但帧在 20~30s 后停止，且 **`decoder reconnected`=0、`重连失败`=0** —— 读循环没有报错，
+  是解码侧不再出帧。
+- **结论**：这正是当年引入 `DecodePool / MultiDecoder` 的原因（代码注释里记着“36 个独立
+  `sail::Decoder` 会压垮 VPU/JPU”）。**全量 per-channel 直连在本机不可行**，与 ISC 是否直连无关。
+- **当前形态（保留）**：非 ISC 24 路进程内解码（`sail::Decoder` 直连），ISC 10 路继续走 ffmpeg
+  网关（分组解码器的稳定性已验证）；36 路 **34 ok / 2 connecting**、`ffmpeg=10`、线程 197、RSS 585MB。
+- **真正“单体”的可行路径**：把全部 36 路交给 **`DecodePool`（4 组 MultiDecoder，每通道一组）**，
+  由它按组内复用解码器并直连 URL（`AIDETECT_DECODE_MODE=multi` 已有该实现），这样既是单进程、
+  又不触发 VPU 过载；需要先验证 MultiDecoder 对 ISC URL 的支持与告警录制（multi 模式 dump 不可用）。
 
 ### 迭代 66 — 2026-11-16 — 恢复生产可用状态；记录部署楔死（KI-029）与当前版本
 

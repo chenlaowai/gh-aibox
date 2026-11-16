@@ -760,9 +760,9 @@ private:
             while (!stop_) {
                 if (gateway_pid_.empty()) {
                     bool gateway_ok = true;
-                    // ISC URLs are single-use; opening them directly needs a re-resolve
-                    // per attempt, which is not implemented yet, so ISC keeps the gateway.
-                    if (direct_decode_enabled() && !isc_source) {
+                    // ISC URLs are single-use: resolve() is called on every attempt and
+                    // isc_rot_ rotates the candidate when an open or read fails.
+                    if (direct_decode_enabled()) {
                         source_url_ = direct_decode_url();
                         gateway_ok = !source_url_.empty();
                     } else {
@@ -863,9 +863,9 @@ private:
                         decoder_ = nullptr;
                         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
                         bool gateway_ok = true;
-                        // ISC URLs are single-use; opening them directly needs a re-resolve
-                        // per attempt, which is not implemented yet, so ISC keeps the gateway.
-                        if (direct_decode_enabled() && !isc_source) {
+                        // ISC URLs are single-use: resolve() is called on every attempt and
+                        // isc_rot_ rotates the candidate when an open or read fails.
+                        if (direct_decode_enabled()) {
                             source_url_ = direct_decode_url();
                             gateway_ok = !source_url_.empty();
                         } else {
@@ -891,10 +891,12 @@ private:
                                 publish_status("监控视频流已恢复");
                             } else {
                                 decoder_ = nullptr;
+                                if (isc_source) ++isc_rot_;
                                 publish_status("重连失败，继续重试");
                             }
                         } catch (const std::exception& e) {
                             decoder_ = nullptr;
+                            if (isc_source) ++isc_rot_;
                             publish_status(std::string("重连失败: ") + e.what());
                         }
                     }
