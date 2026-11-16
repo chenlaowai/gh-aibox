@@ -722,7 +722,29 @@ private:
                 finalize_video(false);
                 if (ret != 0) {
                     publish_status("正在重连监控视频流...");
-                    if (!stop_) decode_pool_.reconnect(group_, slot_);
+                    // MultiDecoder reconnects internally in a tight loop that
+                    // floods the log and burns a core (observed: channel 3
+                    // spinning at 5003).  Remove the channel instead, back off,
+                    // then re-add with a freshly resolved URL on the next loop.
+                    if (!stop_) {
+                        decode_pool_.remove(group_, slot_);
+                        ++open_fail_count_;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(
+                            open_backoff_ms()));
+                        if (cfg_.channel_address.rfind("isc://", 0) == 0) {
+                            try {
+                                source = IscResolver::resolve(cfg_.channel_address);
+                                source_url_ = source;
+                            } catch (const std::exception& e) {
+                                log_warn(cfg_.task_id + " ISC re-resolve: " + e.what());
+                            }
+                        }
+                        int re = decode_pool_.add(group_, slot_, source);
+                        if (re >= 0) {
+                            open_fail_count_ = 0;
+                            publish_status("监控视频流已恢复");
+                        }
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     continue;
                 }
@@ -762,7 +784,10 @@ private:
                     bool gateway_ok = true;
                     // ISC URLs are single-use: resolve() is called on every attempt and
                     // isc_rot_ rotates the candidate when an open or read fails.
-                    if (direct_decode_enabled()) {
+                    // ISC keeps the gateway: 36 direct sail::Decoder objects exhaust the
+                    // VPU on this box (verified: whole box stalls, reboot
+                    // needed).  Non-ISC sources decode in-process.
+                    if (direct_decode_enabled() && !isc_source) {
                         source_url_ = direct_decode_url();
                         gateway_ok = !source_url_.empty();
                     } else {
@@ -865,7 +890,10 @@ private:
                         bool gateway_ok = true;
                         // ISC URLs are single-use: resolve() is called on every attempt and
                         // isc_rot_ rotates the candidate when an open or read fails.
-                        if (direct_decode_enabled()) {
+                        // ISC keeps the gateway: 36 direct sail::Decoder objects exhaust the
+                    // VPU on this box (verified: whole box stalls, reboot
+                    // needed).  Non-ISC sources decode in-process.
+                    if (direct_decode_enabled() && !isc_source) {
                             source_url_ = direct_decode_url();
                             gateway_ok = !source_url_.empty();
                         } else {
@@ -4354,6 +4382,11 @@ private:
         if (recorder_ && recorder_->running()) {
             rc = clip_recorder(alarm_wall_ms, post, pending_.tmp_path);
         }
+        // Multi mode: MultiDecoder carries its own per-channel dump ring, so
+        // the alarm clip is produced in-process (production has the same
+        // in-process recorder).  No helper process and no HTTP video service.
+        if (rc != 0 && use_multi_)
+            rc = decode_pool_.dump(group_, slot_, 5, post, pending_.tmp_path);
         // The box runs with AIDETECT_NO_DUMP=1 to avoid SAIL dump crashes;
         // use the external video service when the packet ring could not
         // produce a file, otherwise HEVC/ISC tasks keep video_path empty.

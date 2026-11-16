@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 67
+iteration: 69
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,39 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 69 — 2026-11-16 — 单体化两次尝试的硬结论：本机 sail 解码器撑不住 36 路直连；回归混合形态
+
+- **尝试 A：36 路全部 per-channel `sail::Decoder` 直连**：初期 24 路可用，但 36 路全开时
+  VPU 解码会话耗尽 → **全盒解码失效**（`Failed to open codec`），且**重启进程也无法恢复、必须重启盒子**。
+- **尝试 B：`DecodePool`（4×MultiDecoder）多模式直连**：能跑起来（ffmpeg=0、33 ok），但
+  1) 某通道 URL 失效后库内部 `Try to reconnect` **死循环刷日志、吃满 CPU**（一次刷出上千行）；
+  2) 长时间运行 dmabuf 涨到 1046，随后大面积 stalled；
+  3) `MultiDecoder::dump` 进程内录制会**堆损坏崩溃**（finalize_video → free 报错）。
+  已给重连加 remove+退避+重新 resolve（`aidetect_mb`），但库内部循环在读取返回前就已启动，治标不治本。
+- **结论**：本机 sail/VPU 条件下，“36 路全进程内”不可行；**稳定形态是混合**：
+  非 ISC 24 路进程内直连解码 + ISC 10 路走 ffmpeg 网关（网关只做拉流转封装，解码仍在本进程）。
+- **当前部署**：`aidetect_v103`（单模式 + 混合直连），36 路 **33 ok / 3 connecting**、`ffmpeg=9`、
+  线程 197、RSS **554MB**、dmabuf 809。源码默认已把 ISC 直连关掉（`direct_decode_enabled() && !isc_source`），
+  避免再次把盒子解码器拖死。
+- **部署效率问题**：本轮触发 4 次 KI-029（docker stop 挂死/容器 D 状态），每次都要重启盒子；
+  恢复流程固定为“重启 → rm 旧容器 → rename 预备容器 → start”，约 4 分钟。
+
+### 迭代 68 — 2026-11-16 — 36 路单体架构达成：DecodePool(MultiDecoder) 进程内解码，ffmpeg 进程归零
+
+- **做法**：`AIDETECT_DECODE_MODE=multi` + `AIDETECT_ALARM_RING=0`，36 路全部由 `DecodePool`
+  （4 组 × 10 通道 `MultiDecoder`）在**同一个进程内**直连拉流解码，不再有每路 ffmpeg 网关。
+  ISC 地址由 `IscResolver::resolve` 在任务线程内解析后直接交给池，重连沿用池的 `set_read_timeout(2)`。
+- **实测（稳定运行）**：**ffmpeg 进程 0**、进程内线程 231、RSS **558MB**、dmabuf 807、`RestartCount=0`、
+  36 路 **33 ok / 3 connecting**、合流 4.9~7.5fps、单通道 1280×720 预览正常（有抓图）。
+- **为什么用 MultiDecoder 而不是 36 个 `sail::Decoder`**：迭代 67 证明 36 个独立解码器会把 VPU/JPU
+  压垮（18 路 20~30s 后停止出帧）；`DecodePool` 的分组解码正是为规避该问题而设计，
+  这也是与生产“一个进程内集中解码”最接近、且在本机稳定的形态。
+- **告警视频**：multi 模式尝试用 `MultiDecoder::dump`（本地 sail 扩展）在进程内录制，
+  **运行几分钟后堆损坏崩溃**（`finalize_video` → json destroy → free 报错），因此禁用；
+  现在走 `AIDETECT_VIDEO_URL`（10.10.206.68:9071 `/dump`）外部录制服务，解码链路保持单进程。
+- **部署事故**（第三次 KI-029）：多模式崩溃后 `docker stop` 再次挂死，只能重启盒子；
+  恢复后直接用 `aidetect_new`（已含目标二进制与环境）替换，30s 内服务恢复。
 
 ### 迭代 67 — 2026-11-16 — 全量进程内解码受限于 VPU：36 个独立 sail::Decoder 会饿死；保留混合形态
 
