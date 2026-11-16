@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HNKCCH.Base.Nuget.Files" Version="2.1.0" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.AITask\HNKC.AIBox.AITask.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.Entities\HNKC.AIBox.Entities.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.Enums\HNKC.AIBox.Enums.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.Exceptions\HNKC.AIBox.Exceptions.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.Models\HNKC.AIBox.Models.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.SqlSugars\HNKC.AIBox.SqlSugars.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.Utils\HNKC.AIBox.Utils.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\HNKC.AIBox.Web\HNKC.AIBox.Web.csproj" />
+  </ItemGroup>
+
+</Project>

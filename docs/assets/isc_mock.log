@@ -1,0 +1,129 @@
+2026-11-02 19:55:53 [WARN] aggregator disabled by AIDETECT_DISABLE_AGG
+2026-11-02 19:55:53 [INFO] HTTP/WS listening on 0.0.0.0:9016
+2026-11-02 19:55:55 [INFO] font loaded: /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
+2026-11-02 19:55:55 [INFO] task started: isctest group=1 slot=8
+2026-11-02 19:55:55 [INFO] ISC resolve host=127.0.0.1 port=8443 camera=abc123...
+2026-11-02 19:55:55 [INFO] isctest ISC resolved to rtsp
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:522] refcounted_frames: 1
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:523] extra_frame_buffer_num:2
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:524] rtsp_transport: tcp
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:525] stimeout: 20000000
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:526] rtsp_flags: prefer_tcp
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:527] buffer_size: 1024000
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:528] max_delay: 500000
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:529] probesize: 0
+[2026-11-02 19:55:55.965] [info] [cvwrapper.cpp:530] analyzeduration: 0
+interleave TCP based rtp used: 0, 1
+interleave TCP based rtp used: 2, 3
+so addr : /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmvideo.so.0, name_len: 100
+vpu firmware addr: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/vpu_firmware/chagall_dec.bin
+VERSION=0, REVISION=378738
+2026-11-02 19:55:57 [INFO] isctest decoder opened shape=1,3,1440,2560
+2026-11-02 19:55:57 [INFO] model loaded: reflectivejacket /data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel input=1,3,640,640 outputs=1
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied

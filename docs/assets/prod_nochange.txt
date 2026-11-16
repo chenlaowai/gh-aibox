@@ -1,0 +1,28 @@
+### NOW
+Thu Nov  5 16:07:56 CST 2026
+### FILES MODIFIED IN /data/app SINCE 2026-11-05 00:00
+/data/app/edge.db
+/data/app/Content/app.log.1
+/data/app/Content/VIDEO_DAY_20261105/VIDEO_901D5933-C90C-47F5-9CFF-E6B0894ADECA.mp4
+/data/app/Content/app.log
+/data/app/alarm.db
+/data/app/logs/access.log
+/data/app/logs/error.log
+/data/app/Images/DAY_20261105/IMAGE_12D41335-BB73-4081-96BD-FF385D380E1E_1_BoatNoLifeJacket_labeled.jpg
+count:
+8
+### KEY FILE STAT
+/data/app/app 1269576 2025-12-16 16:41:07.012000000 +0800 777
+/data/app/libEdgeSystem.so 35376792 2025-12-15 11:55:22.000000000 +0800 777
+/data/app/libboard_sdk_bm.so 25445280 2025-12-15 11:55:22.000000000 +0800 777
+/data/app/edge_global.yaml 24 2025-01-01 02:20:10.920000000 +0800 777
+/data/app/app.json 36765 2025-01-20 15:17:53.000000000 +0800 777
+### KEY MD5
+12b159cf953ab1926bf7a6b041dee510  /data/app/app
+b516cb810cdc290dcb631c16fc578e70  /data/app/libEdgeSystem.so
+3f5b765a9e43407ffa757800644581ad  /data/app/libboard_sdk_bm.so
+f722873832d69e8eefdf21f634b8620a  /data/app/edge_global.yaml
+### CONFIG MTIME
+/data/app/edge_global.yaml 2025-01-01 02:20:10.920000000 +0800
+/data/app/edge.db 2026-11-05 11:54:23.384000000 +0800
+### AIDETECT PROCESS IN PROD

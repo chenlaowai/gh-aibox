@@ -1,0 +1,30 @@
+.n-modal-mask {
+  backdrop-filter: blur(2px);
+}
+
+/* 解决tabs组件不贴合下边缘问题 */
+.v-x-scroll {
+  height: 100%;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 10px;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-button {
+  height: 0;
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-track-piece {
+  background: #eee;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 6px;
+}

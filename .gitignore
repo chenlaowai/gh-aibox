@@ -1,0 +1,32 @@
+# Build inputs / outputs generated on the AI box (never commit)
+env/packages/
+env/sdk/
+env/src/
+env/build/
+env/bin/
+
+# Test build artifacts and downloaded models
+build/
+tests/**/bin/
+tests/**/models/
+tests/**/results/
+*.bmodel
+*.tar.gz
+
+# Web build inputs/outputs
+web/node_modules/
+web/dist/
+web/build/
+web/.vite/
+
+# Large binary assets that are produced/deployed separately
+*.mp4
+*.ttc
+*.ttf
+*.so
+*.so.*
+
+# Local scratch
+*.log.tmp
+.DS_Store
+Thumbs.db

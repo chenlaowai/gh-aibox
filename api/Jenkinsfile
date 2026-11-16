@@ -1,0 +1,52 @@
+def git_url = "http://10.10.140.13/hnkc.aibox/hnkc.aibox.api.git"
+def git_id = "git"
+
+pipeline {
+    agent {
+        label "${params.slave}"
+    } 
+    stages {
+        stage('拉取代码'){
+            steps {
+                echo "远程节点"
+                echo "选中分支：${params.branch}"
+                checkout([$class: 'GitSCM', 
+                branches: [[name: "${params.branch}"]], 
+                doGenerateSubmoduleConfigurations: false, 
+                extensions: [], submoduleCfg: [], 
+                userRemoteConfigs: [[credentialsId: "${git_id}", url: "${git_url}"]]
+                ])
+            }
+        }
+        stage('复制配置文件'){
+            steps {
+                script {
+                    def env = "${params.env}"
+                    echo "复制${env}环境的配置文件"
+                    sh "cp docker-compose-config/${env}/docker-compose.yml ."
+                    sh "cp docker-compose-config/${env}/docker-compose.override.yml ."
+                }
+            }
+        }
+        stage('构建发布项目') {
+            steps {
+                script { 
+                    echo '构建项目' 
+                    def selectedOptions = params.service.split(',')
+                    for (option in selectedOptions) {
+                        echo "服务开始发布: ${option}"
+
+                        if(option!="gateway")
+                        {
+                            sh "docker-compose build ${option}"
+                        }
+			sh "docker-compose stop ${option}"
+                        sh "docker-compose rm -f ${option}"
+                        sh "docker-compose up ${option} -d"
+                        echo "服务发布完成: ${option}"
+                    }
+                }
+            }
+        }
+    }
+}

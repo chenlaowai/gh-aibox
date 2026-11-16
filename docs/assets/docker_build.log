@@ -1,0 +1,59 @@
+Sending build context to Docker daemon    583MB
+Step 1/16 : FROM aibox-api:latest
+ ---> 8ab4fa890ced
+Step 2/16 : WORKDIR /app
+ ---> Using cache
+ ---> 13e82b704b13
+Step 3/16 : COPY env/sdk /opt/sophon-sdk
+ ---> Using cache
+ ---> dea88663c671
+Step 4/16 : COPY docker/lib/libcrypto.so.1.1 /usr/lib/aarch64-linux-gnu/libcrypto.so.1.1
+ ---> Using cache
+ ---> ac80043c2429
+Step 5/16 : COPY docker/lib/libssl.so.1.1 /usr/lib/aarch64-linux-gnu/libssl.so.1.1
+ ---> Using cache
+ ---> 5438c26e19f0
+Step 6/16 : COPY build/aidetect/aidetect /app/aidetect
+ ---> 756fbb8f3754
+Step 7/16 : RUN ln -sf /opt/sophon-sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/bin/ffmpeg /usr/local/bin/ffmpeg
+ ---> Running in c96a6c1de7f7
+Removing intermediate container c96a6c1de7f7
+ ---> 2c34e079df9a
+Step 8/16 : ENV LD_LIBRARY_PATH=/opt/sophon-sdk/sophon-sail/lib:/opt/sophon-sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib:/opt/sophon-sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/lib:/opt/sophon-sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib
+ ---> Running in 4e3095565236
+Removing intermediate container 4e3095565236
+ ---> fe9d404bf35f
+Step 9/16 : ENV AIDETECT_PORT=9000
+ ---> Running in 8c0bc118fe31
+Removing intermediate container 8c0bc118fe31
+ ---> 301f15e00423
+Step 10/16 : ENV AIDETECT_MODEL_ROOT=/models/BM1684X
+ ---> Running in 94a52e729860
+Removing intermediate container 94a52e729860
+ ---> 30c136bbd275
+Step 11/16 : ENV AIDETECT_DATA_ROOT=/data/CT/project/ai/inference/save
+ ---> Running in 42d048314b12
+Removing intermediate container 42d048314b12
+ ---> ae78c45dd1c0
+Step 12/16 : ENV AIDETECT_TMP_ROOT=/data/CT/project/ai/inference/video_transtation
+ ---> Running in 9ee4bdede68d
+Removing intermediate container 9ee4bdede68d
+ ---> a93712ca9d54
+Step 13/16 : ENV AIDETECT_CONFIG_BASE=http://10.10.206.68
+ ---> Running in 87b6a4521403
+Removing intermediate container 87b6a4521403
+ ---> f22f12780115
+Step 14/16 : ENV AIDETECT_REPORT_BASE=http://127.0.0.1
+ ---> Running in 1b2490204dd3
+Removing intermediate container 1b2490204dd3
+ ---> 3453fc8dc7ef
+Step 15/16 : EXPOSE 9000
+ ---> Running in a7557b366417
+Removing intermediate container a7557b366417
+ ---> 22b875a190f1
+Step 16/16 : ENTRYPOINT ["/app/aidetect"]
+ ---> Running in c54d26a5cd4f
+Removing intermediate container c54d26a5cd4f
+ ---> 5d8b5fa65297
+Successfully built 5d8b5fa65297
+Successfully tagged aidetect:dev

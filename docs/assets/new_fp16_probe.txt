@@ -1,0 +1,9 @@
+model=/data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel
+13d8c91f9a3a7e87791a6e05373c30d0  /data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel
+-rw-rw-r-- 1 linaro linaro 24735744 Nov  2 14:10 /data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel
+=== norm=1 ===
+model=/data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel
+output_shape=(8400, 6) class_max=0.998535 class_nonzero=13165 anchors>conf=534
+=== norm=255 ===
+model=/data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel
+output_shape=(8400, 6) class_max=0.913574 class_nonzero=814 anchors>conf=62

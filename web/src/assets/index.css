@@ -1,0 +1,89 @@
+@import './reset.css';
+@import './transition.css';
+@import './naive.css';
+@import './font.css';
+
+:root {
+  /* Naive UI 全局遮罩层透明度配置 */
+  --n-overlay-color: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Naive UI 全局遮罩层样式覆盖 */
+.n-drawer-mask,
+.n-modal-mask,
+.n-popover-mask,
+.n-dialog-mask,
+.n-notification-mask,
+.n-image-mask {
+  background-color: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* 针对可能的其他遮罩类名 */
+.n-overlay {
+  background-color: rgba(0, 0, 0, 0.6) !important;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+* {
+  box-sizing: border-box;
+}
+.color-weak {
+  filter: invert(80%);
+}
+
+.gray-mode {
+  filter: grayscale(100%);
+}
+
+.ys {
+  font-family: 'YouSheBiaoTiHei';
+}
+
+/* 全局滚动条样式 - Chrome移动端透明细长风格 */
+/* WebKit 滚动条样式 (Chrome, Safari, Edge) */
+*::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  transition: background 0.3s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox 滚动条样式 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+/* IE 和 Edge */
+* {
+  -ms-overflow-style: -ms-autohiding-scrollbar;
+}
+
+/* 隐藏的 n-modal 遮罩不应拦截点击（任务管理开始/停止按钮被空 modal 遮罩挡住） */
+.n-modal-mask[aria-hidden="true"],
+.n-modal-container[aria-hidden="true"] {
+  pointer-events: none !important;
+}

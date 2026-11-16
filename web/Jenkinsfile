@@ -1,0 +1,47 @@
+def git_url = "http://10.10.140.13/hnkc.aibox/hnkc.aibox.web"
+def git_id = "git"
+
+pipeline {
+    agent {
+        label "${params.slave}"
+    }
+    stages {
+        stage('拉取代码'){
+            steps {
+                echo "端口 ${params.port}"
+                echo "远程节点"
+                echo "选中分支：${params.branch}"
+                checkout([$class: 'GitSCM',
+                branches: [[name: "${params.branch}"]],
+                doGenerateSubmoduleConfigurations: false,
+                extensions: [], submoduleCfg: [],
+                userRemoteConfigs: [[credentialsId: "${git_id}", url: "${git_url}"]]
+                ])
+            }
+        }
+        stage('构建新镜像') {
+            steps {
+                script {
+                    echo '构建新镜像'
+                    sh "docker build --build-arg VUE_ENV=${params.env} -t aibox-web-${params.env}:latest ."
+                }
+            }
+        }
+        stage('删除旧镜像') {
+            steps {
+                script {
+                    echo '删除旧镜像'
+                    sh "docker rm -f aibox-web-${params.env}"
+                }
+            }
+        }
+        stage('运行镜像') {
+            steps {
+                script {
+                    echo '运行镜像'
+                    sh "docker run -d --name aibox-web-${params.env} -p ${params.port}:80 aibox-web-${params.env}:latest"
+                }
+            }
+        }
+    }
+}

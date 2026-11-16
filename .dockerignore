@@ -1,0 +1,9 @@
+env/packages/
+env/src/
+env/build/
+env/bin/
+tests/**/bin/
+tests/**/results/
+tests/**/models/
+.git/
+*.log

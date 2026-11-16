@@ -1,0 +1,102 @@
+{
+  "common": {
+    "primaryColor": "#2080f0",
+    "primaryColorHover": "#0a75f3",
+    "primaryColorPressed": "#0145f7",
+    "primaryColorSuppl": "#2d67fe",
+    "infoColor": "#2080f0",
+    "infoColorHover": "#4098fc",
+    "infoColorPressed": "#1060c9",
+    "infoColorSuppl": "#4098fc",
+    "successColor": "#18a058",
+    "successColorHover": "#36ad6a",
+    "successColorPressed": "#0c7a43",
+    "successColorSuppl": "#36ad6a",
+    "warningColor": "#f0a020",
+    "warningColorHover": "#fcb040",
+    "warningColorPressed": "#c97c10",
+    "warningColorSuppl": "#fcb040",
+    "errorColor": "#d03050",
+    "errorColorHover": "#de576d",
+    "errorColorPressed": "#ab1f3f",
+    "errorColorSuppl": "#de576d"
+  },
+  "Drawer": {
+    "color": "#020924FF",
+    "colorEmbedded": "#020924FF",
+    "titleTextColor": "#fff",
+    "titleFontWeight": "600"
+  },
+  "Input": {
+    "color": "#0E173AFF",
+    "colorFocus": "#0E173AFF",
+    "textColor": "#fff",
+    "placeholderColor": "rgba(255, 255, 255, 0.6)",
+    "border": "1px solid #374A70FF",
+    "borderHover": "1px solid #4A5A7FFF",
+    "borderFocus": "1px solid #5A6A8FFF",
+    "borderRadius": "0",
+    "heightMedium": "40px"
+  },
+  "Select": {
+    "peers": {
+      "InternalSelection": {
+        "color": "#0E173AFF",
+        "border": "1px solid #374A70FF",
+        "borderHover": "1px solid #4A5A7FFF",
+        "borderFocus": "1px solid #5A6A8FFF",
+        "borderRadius": "0",
+        "textColor": "#fff",
+        "placeholderColor": "rgba(255, 255, 255, 0.6)",
+        "arrowColor": "rgba(255, 255, 255, 0.7)",
+        "heightMedium": "40px"
+      },
+      "InternalSelectMenu": {
+        "color": "#0E173AFF",
+        "borderRadius": "0",
+        "optionTextColor": "#fff",
+        "optionTextColorActive": "#fff",
+        "groupHeaderTextColor": "rgba(255, 255, 255, 0.7)"
+      }
+    }
+  },
+  "InputNumber": {
+    "color": "#0E173AFF",
+    "textColor": "#fff",
+    "placeholderColor": "rgba(255, 255, 255, 0.6)",
+    "border": "1px solid #374A70FF",
+    "borderHover": "1px solid #4A5A7FFF",
+    "borderFocus": "1px solid #5A6A8FFF",
+    "borderRadius": "0",
+    "heightMedium": "40px"
+  },
+  "TreeSelect": {
+    "peers": {
+      "InternalSelection": {
+        "color": "#0E173AFF",
+        "border": "1px solid #374A70FF",
+        "borderHover": "1px solid #4A5A7FFF",
+        "borderFocus": "1px solid #5A6A8FFF",
+        "borderRadius": "0",
+        "textColor": "#fff",
+        "placeholderColor": "rgba(255, 255, 255, 0.6)",
+        "arrowColor": "rgba(255, 255, 255, 0.7)",
+        "heightMedium": "40px"
+      },
+      "Tree": {
+        "nodeColorHover": "rgba(255, 255, 255, 0.1)",
+        "nodeColorPressed": "rgba(255, 255, 255, 0.15)",
+        "nodeColorActive": "rgba(255, 255, 255, 0.15)",
+        "nodeTextColor": "#fff"
+      }
+    }
+  },
+  "Form": {
+    "labelTextColor": "#fff",
+    "asteriskColor": "#d03050",
+    "feedbackTextColor": "#fff",
+    "feedbackTextColorError": "#d03050",
+    "feedbackTextColorWarning": "#f0a020",
+    "feedbackTextColorSuccess": "#18a058"
+  }
+}

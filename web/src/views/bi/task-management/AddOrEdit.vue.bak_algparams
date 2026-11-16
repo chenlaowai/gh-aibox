@@ -1,0 +1,557 @@
+<script setup lang="tsx">
+import { onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useLoading, useNaiveForm } from '@/hooks'
+import { useResponsiveHeight } from '@/hooks/useResponsiveHeight'
+import CardHeader from '@/components/common/CardHeader.vue'
+
+const route = useRoute()
+const router = useRouter()
+const { loading, startLoading, endLoading } = useLoading(false)
+const { formRef, validate } = useNaiveForm()
+
+// 响应式高度计算 - 适配autofit缩放 (278px是表单上方的固定高度)
+const { height: formHeight } = useResponsiveHeight(278)
+
+enum AuthorizationStatus {
+  Unauthorized = 0,
+  Authorized = 1,
+}
+
+const channelOpts = ref<{ label: string, value: string }[]>([])
+const algoModeList = ref<API.GetAlgoModeDropdownResult[]>([])
+const authorizedAlgorithms = computed(() => algoModeList.value.filter(item => item.authorizationStatus === AuthorizationStatus.Authorized))
+const unauthorizedAlgorithms = computed(() => algoModeList.value.filter(item => item.authorizationStatus === AuthorizationStatus.Unauthorized))
+
+// 任务编码（用于编辑模式）
+const taskId = ref(route.params.id as string || '')
+const taskDetail = ref<API.GetTaskDetailResult | null>(null)
+
+interface TaskForm {
+  code: string
+  remark: string
+  channelId?: string
+  reportAddress: string
+  frameInterval: number
+  detectThreshold: number
+  cooldownTime: number
+  videoDuration: number
+  detectSection: number
+}
+// 表单数据
+const formModel = ref<TaskForm>({
+  code: '',
+  remark: '',
+  channelId: undefined,
+  reportAddress: '',
+  frameInterval: 0,
+  detectThreshold: 0,
+  cooldownTime: 0,
+  videoDuration: 0,
+  detectSection: 0,
+})
+
+interface AlgoConfigVO {
+  algoId: string
+  algoName: string
+  configs: Array<API.TaskAlgoConfig & {
+    step?: number
+    min?: number
+    max?: number
+    options?: { label: string, value: string }[]
+  }>
+}
+
+// 缓存管理器
+const algoConfigCache = reactive(new Map<string, any[]>())
+
+const selectedAlgoIds = ref<string[]>([]) // 选中的算法ID数组（用于界面绑定）
+const currentConfigs = ref<AlgoConfigVO[]>([]) // 当前选中的配置项
+
+// 监听选中算法的变化，自动转换数据格式
+watch(selectedAlgoIds, async (newIds, oldIds) => {
+  const added = newIds.filter(id => !oldIds.includes(id))
+
+  for (const algoId of added) {
+    await loadAlgoConfig(algoId)
+  }
+
+  updateCurrentConfigs()
+}, { deep: true })
+
+async function loadAlgoConfig(algoId: string) {
+  if (algoConfigCache.has(algoId)) {
+    console.log(`从缓存加载算法${algoId}的配置`)
+    return
+  }
+  try {
+    console.log(`请求算法${algoId}的配置`)
+    const [error, res]: any = await utils.tryit(api.algoMode.getAlgoModeGetAlgoModelConfig)({
+      algoId,
+    })
+    if (error || !res.isSuccess)
+      throw error
+    // 若详情有对应返回数据，则使用详情返回的算法配置数据
+    const idx = taskDetail.value?.taskAlgoResult?.findIndex(item => item.algoId === algoId)
+
+    if (idx !== -1 && taskDetail.value!.taskAlgoResult![idx!].valueConfig!.length > 0) {
+      algoConfigCache.set(algoId, taskDetail.value!.taskAlgoResult![idx!].valueConfig || [])
+    }
+    else {
+      algoConfigCache.set(algoId, res.data)
+    }
+  }
+  catch (error) {
+    console.error(`加载算法${algoId}配置失败`, error)
+  }
+}
+
+function updateCurrentConfigs() {
+  currentConfigs.value = []
+  selectedAlgoIds.value.forEach((algoId) => {
+    const algoName = algoModeList.value.find(algo => algo.id === algoId)?.name
+    const configs = algoConfigCache.get(algoId)
+    if (configs) {
+      currentConfigs.value.push({
+        algoId,
+        algoName: algoName || '',
+        configs,
+      })
+    }
+  })
+}
+
+// 表单验证规则
+const rules = {
+  code: [{ required: true, message: '请输入任务编号' }, { message: '编码不超过50个字符', trigger: ['input', 'blur'], max: 50 }],
+  remark: [{ required: true, message: '请输入任务描述' }, { message: '描述不超过100个字符', trigger: ['input', 'blur'], max: 100 }],
+  channelId: [{ required: true, message: '请输入视频编号' }],
+  reportAddress: [{ required: true, message: '请输入上报地址URL' }, { message: 'URL不超过255个字符', trigger: ['input', 'blur'], max: 255 }],
+  frameInterval: [{ required: true, message: '请输入间隔帧数' }, { type: 'number' as const, min: 2, message: '间隔帧数必须大于等于2', trigger: ['input', 'blur'] }],
+  detectThreshold: [{ required: true, message: '请输入触发帧数' }, { type: 'number' as const, min: 1, message: '触发帧数必须大于等于1', trigger: ['input', 'blur'] }],
+  cooldownTime: [{ required: true, message: '请输入上报间隔' }, { type: 'number' as const, min: 3, message: '上报间隔必须大于等于3', trigger: ['input', 'blur'] }],
+  videoDuration: [{ required: true, message: '请输入告警视频时长' }, { type: 'number' as const, min: 5, max: 20, message: '告警视频时长必须在5到20之间', trigger: ['input', 'blur'] }],
+  detectSection: [{ required: true, message: '请输入触发区间' }, { type: 'number' as const, min: 1, max: 20, message: '触发区间必须在1到20之间', trigger: ['input', 'blur'] }],
+}
+
+// 是否为编辑模式
+const isEditMode = computed(() => !!taskId.value)
+const pageTitle = computed(() => isEditMode.value ? '编辑任务' : '新增任务')
+
+// 初始化表单数据
+async function initFormData() {
+  if (isEditMode.value) {
+    try {
+      startLoading()
+      const [error, res1]: any = await utils.tryit(api.task.getTaskGetTaskDetailId)({
+        id: taskId.value,
+      })
+      if (error || !res1.isSuccess)
+        return
+      const taskData = res1.data || {}
+      taskDetail.value = taskData
+      formModel.value = {
+        code: taskData.code || '',
+        remark: taskData.remark || '',
+        channelId: taskData.channelId || '',
+        reportAddress: taskData.reportAddress || '',
+        frameInterval: taskData.frameInterval ?? 0,
+        detectThreshold: taskData.detectThreshold ?? 0,
+        detectSection: taskData.detectSection ?? 0,
+        videoDuration: taskData.videoDuration ?? 0,
+        cooldownTime: taskData.cooldownTime ?? 0,
+      }
+
+      // 初始化选中的算法ID数组
+      if (taskData.taskAlgoResult && Array.isArray(taskData.taskAlgoResult)) {
+        selectedAlgoIds.value = taskData.taskAlgoResult.map((algo: API.TaskAlgoResult) => algo.algoId).filter(Boolean)
+      }
+    }
+    catch (error) {
+      console.error('获取任务详情失败:', error)
+    }
+    finally {
+      endLoading()
+    }
+  }
+}
+
+// 将选中的算法ID转换为TaskAlgoRequest格式
+function convertSelectedAlgosToRequest(algoIds: string[]): API.TaskAlgoRequest[] {
+  return algoIds.map(algoId => ({
+    algoId,
+    valueConfig: currentConfigs.value.find(item => item.algoId === algoId)?.configs || [],
+  }),
+  )
+}
+
+// 保存任务
+async function handleSave() {
+  try {
+    await validate()
+    startLoading()
+    const taskAlgoRequest = convertSelectedAlgosToRequest(selectedAlgoIds.value)
+    const fn = isEditMode.value
+      ? api.task.putTaskUpdateTask
+      : api.task.postTaskAddTask
+    const [error, res]: any = await utils.tryit(fn)({
+      id: isEditMode.value ? taskId.value : '',
+      ...formModel.value,
+      channelId: formModel.value.channelId!,
+      taskAlgoRequest,
+    })
+    if (error || !res.isSuccess)
+      throw error
+    window.$message.success(isEditMode.value ? '任务更新成功' : '任务创建成功')
+    router.push({ name: 'taskManagement' })
+  }
+  catch (error) {
+    console.error('表单验证失败:', error)
+  }
+  finally {
+    endLoading()
+  }
+}
+
+// 取消操作
+function handleCancel() {
+  router.back()
+}
+
+// 移除未使用的重置函数
+onMounted(async () => {
+  utils.tryit(api.algoMode.getAlgoModeGetAlgoModeDropdown)().then(([error, res]) => {
+    if (error || !res.isSuccess)
+      return
+    algoModeList.value = res.data || []
+  }).catch((error) => {
+    console.error('获取算法配置列表失败', error)
+  })
+  utils.tryit(api.channel.getChannelGetChannelDropdown)().then(([error, res]) => {
+    if (error || !res.isSuccess)
+      return
+    channelOpts.value = res.data?.map((item: API.GetChannelDropdownResult) => ({ label: item.name!, value: item.id! })) || []
+  }).catch((error) => {
+    console.error('获取通道下拉列表失败', error)
+  })
+  initFormData()
+})
+</script>
+
+<template>
+  <div class="mt-[8px] px-[74px]">
+    <CardHeader :title="pageTitle">
+      <template #prefix>
+        <!-- 返回按钮 -->
+        <n-button
+          text
+          type="primary"
+          size="medium"
+          class="return-button"
+          @click="handleCancel"
+        >
+          <template #icon>
+            <icon-park-outline-return />
+          </template>
+          返回
+        </n-button>
+      </template>
+      <n-form
+        ref="formRef"
+        :model="formModel"
+        :rules="rules"
+        label-placement="left"
+        label-width="130px"
+        require-mark-placement="left"
+        size="medium"
+        class="mt-25px overflow-y-auto"
+        :style="{ height: formHeight }"
+      >
+        <n-grid :cols="4" :x-gap="24" :y-gap="16">
+          <!-- 任务编号 -->
+          <n-gi :span="2">
+            <n-form-item label="任务编号" path="code">
+              <n-input
+                v-model:value="formModel.code"
+                v-trim
+                :disabled="isEditMode"
+                placeholder="请输入任务编号"
+              />
+            </n-form-item>
+          </n-gi>
+          <!-- 任务名称 -->
+          <n-gi :span="2">
+            <n-form-item label="任务描述" path="remark">
+              <n-input
+                v-model:value="formModel.remark"
+                v-trim
+                placeholder="请输入任务名称"
+              />
+            </n-form-item>
+          </n-gi>
+          <!-- 视频地址 -->
+          <n-gi :span="4">
+            <n-form-item label="通道名称" path="channelId">
+              <n-select
+                v-model:value="formModel.channelId"
+                :options="channelOpts"
+                placeholder="请选择通道"
+              />
+            </n-form-item>
+          </n-gi>
+          <!-- 上报地址 -->
+          <n-gi :span="4">
+            <n-form-item label="上报地址" path="reportAddress">
+              <n-input
+                v-model:value="formModel.reportAddress"
+                v-trim
+                placeholder="请输入上报地址URL"
+              />
+            </n-form-item>
+          </n-gi>
+          <n-gi :span="1">
+            <n-form-item path="frameInterval">
+              <template #label>
+                <div class="flex justify-end gap-6px">
+                  <span>间隔帧数</span>
+                  <HelpInfo message="推理间隔帧数（单位帧）（>=2）" />
+                </div>
+              </template>
+              <n-input-number
+                v-model:value="formModel.frameInterval"
+                v-trim
+                placeholder="请输入间隔帧数"
+              />
+            </n-form-item>
+          </n-gi>
+
+          <n-gi :span="1">
+            <n-form-item path="detectThreshold">
+              <template #label>
+                <div class="flex justify-end gap-6px">
+                  <span>触发帧数</span>
+                  <HelpInfo message=" 告警事件触发帧数：在detect_section帧数中有detect_threshold帧数检测到目标则触发报警（单位帧）（>=1且小于上报间隔）" />
+                </div>
+              </template>
+              <n-input-number
+                v-model:value="formModel.detectThreshold"
+                v-trim
+                placeholder="请输入触发帧数"
+              />
+            </n-form-item>
+          </n-gi>
+          <n-gi :span="1">
+            <n-form-item path="cooldownTime">
+              <template #label>
+                <div class="flex justify-end gap-6px">
+                  <span>上报间隔</span>
+                  <HelpInfo message="告警事件上报冷却时长（单位分钟）（>=3）" />
+                </div>
+              </template>
+              <n-input-number
+                v-model:value="formModel.cooldownTime"
+                v-trim
+                placeholder="请输入上报间隔"
+              />
+            </n-form-item>
+          </n-gi>
+          <n-gi :span="1">
+            <n-form-item path="videoDuration">
+              <template #label>
+                <div class="flex justify-end gap-6px">
+                  <span>告警视频时长</span>
+                  <HelpInfo message="告警事件存储视频时长（单位秒）（5~20）" />
+                </div>
+              </template>
+              <n-input-number
+                v-model:value="formModel.videoDuration"
+                v-trim
+                placeholder="请输入告警视频时长"
+              />
+            </n-form-item>
+          </n-gi>
+          <n-gi :span="1">
+            <n-form-item path="detectSection">
+              <template #label>
+                <div class="flex justify-end gap-6px">
+                  <span>触发区间</span>
+                  <HelpInfo message="告警事件触发时间区间：在detect_section帧数中有detect_threshold帧数检测到目标则触发报警（单位帧）（1~20）" />
+                </div>
+              </template>
+              <n-input-number
+                v-model:value="formModel.detectSection"
+                v-trim
+                placeholder="请输入触发区间"
+              />
+            </n-form-item>
+          </n-gi>
+          <!-- 算法配置 -->
+          <n-gi :span="4">
+            <CardHeader title="算法配置">
+              <n-form-item path="configItems" class="mt-[20px]">
+                <n-tabs type="line" animated>
+                  <!-- 已授权标签页 -->
+                  <n-tab-pane name="authorizedAlgorithms" tab="已授权-可完全使用">
+                    <n-checkbox-group v-model:value="selectedAlgoIds">
+                      <n-grid :cols="8" :x-gap="16" :y-gap="12">
+                        <n-gi v-for="item in authorizedAlgorithms" :key="item.id">
+                          <n-checkbox :value="item.id" class="w-full">
+                            <span class="text-center text-sm">{{ item.name }}</span>
+                          </n-checkbox>
+                        </n-gi>
+                      </n-grid>
+                    </n-checkbox-group>
+                  </n-tab-pane>
+
+                  <!-- 未授权标签页 -->
+                  <n-tab-pane name="unauthorized" tab="未授权-可体验使用">
+                    <n-checkbox-group v-model:value="selectedAlgoIds">
+                      <n-grid :cols="8" :x-gap="16" :y-gap="12">
+                        <n-gi v-for="item in unauthorizedAlgorithms" :key="item.id">
+                          <n-checkbox :value="item.id" class="w-full">
+                            <span class="text-center text-sm">{{ item.name }}</span>
+                          </n-checkbox>
+                        </n-gi>
+                      </n-grid>
+                    </n-checkbox-group>
+                  </n-tab-pane>
+                </n-tabs>
+              </n-form-item>
+            </CardHeader>
+          </n-gi>
+
+          <n-gi v-if="currentConfigs.length" :span="4">
+            <div>
+              <div
+                v-for="algo in currentConfigs"
+                :key="algo.algoName"
+                class="algo-config-card"
+              >
+                <div>
+                  <h4 class="mb-4 text-lg text-white font-medium">
+                    {{ algo.algoName || '算法配置' }}
+                  </h4>
+                </div>
+                <n-grid :cols="4" :y-gap="12">
+                  <n-gi
+                    v-for="config in algo.configs"
+                    :key="config.configId || config.code"
+                  >
+                    <n-form-item :label="config.name" label-placement="left">
+                      <n-input-number
+                        v-if="config.valueType === 'input-number'"
+                        :value="Number(config.configValue)"
+                        :precision="2"
+                        :step="config.step !== undefined ? Number(config.step) : 0.1"
+                        :placeholder="`请输入${config.name}`"
+                        @update:value="val => config.configValue = val === null ? '' : String(val)"
+                      />
+                      <n-switch
+                        v-else-if="config.valueType === 'switch'"
+                        :value="String(config.configValue) === 'true'"
+                        @update:value="val => config.configValue = String(val)"
+                      />
+                      <n-select
+                        v-else-if="config.valueType === 'select'"
+                        v-model:value="config.configValue"
+                        :options="config.options"
+                        :placeholder="`请选择${config.name}`"
+                      />
+                      <n-slider
+                        v-else-if="config.valueType === 'slider'"
+                        :value="config.configValue === '' || config.configValue === null || config.configValue === undefined ? 0.5 : Number(config.configValue)"
+                        :min="config.min !== undefined ? Number(config.min) : 0"
+                        :max="config.max !== undefined ? Number(config.max) : 1"
+                        :step="config.step !== undefined ? Number(config.step) : 0.1"
+                        @update:value="val => config.configValue = String(val)"
+                      />
+                      <n-checkbox
+                        v-else-if="config.valueType === 'checkbox'"
+                        :checked="String(config.configValue) === 'true'"
+                        @update:checked="val => config.configValue = String(val)"
+                      />
+                      <n-radio-group
+                        v-else-if="config.valueType === 'radio'"
+                        v-model:value="config.configValue"
+                        :name="config.code"
+                      >
+                        <n-space>
+                          <n-radio
+                            v-for="opt in config.options"
+                            :key="opt.value"
+                            :value="opt.value"
+                          >
+                            {{ opt.label }}
+                          </n-radio>
+                        </n-space>
+                      </n-radio-group>
+                      <n-input
+                        v-else-if="config.valueType === 'input'"
+                        v-model:value="config.configValue"
+                        v-trim
+                        :placeholder="`请输入${config.name}`"
+                      />
+                    </n-form-item>
+                  </n-gi>
+                  <n-gi v-if="!algo.configs.length">
+                    <n-empty description="该算法暂无可配置参数" />
+                  </n-gi>
+                </n-grid>
+              </div>
+            </div>
+          </n-gi>
+        </n-grid>
+      </n-form>
+      <!-- 操作按钮 -->
+      <div class="mt-8 flex justify-end gap-5">
+        <CustomButton class="h-[40px] w-[110px]" @click="handleCancel">
+          取消
+        </CustomButton>
+        <CustomButton
+          class="h-[40px] w-[110px]"
+          type="warn"
+          :loading="loading"
+          @click="handleSave"
+        >
+          {{ isEditMode ? '更新' : '保存' }}
+        </CustomButton>
+      </div>
+    </CardHeader>
+  </div>
+</template>
+
+<style lang="scss" scoped>
+// 返回按钮样式
+.return-button {
+  font-size: 16px;
+  font-weight: 500;
+
+  :deep(.n-button__content) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  :deep(.n-button__icon) {
+    font-size: 18px;
+  }
+
+  &:hover {
+    color: #409eff !important;
+    background-color: rgba(64, 158, 255, 0.1);
+    border-radius: 6px;
+  }
+}
+
+:deep(.n-checkbox) {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+
+  &.n-checkbox--checked {
+    border-color: #0c5cffff;
+    background-color: rgba(24, 56, 160, 0.1);
+  }
+}
+</style>

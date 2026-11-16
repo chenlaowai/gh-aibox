@@ -1,0 +1,6 @@
+2026-11-02 19:54:12 [INFO] task started: test_cig group=0 slot=2
+[2026-11-02 19:54:12.531] [error] decoder video dump only support h264 and h265 /data/CT/project/ai/gh-aibox-dev/env/src/sophon-sail/src/cvwrapper.cpp,656
+2026-11-02 19:54:12 [INFO] model loaded: cigarette /data/CT/project/ai/models/BM1684X/damoyolo_tinynasL25_S_cigarette.bmodel input=1,3,640,640 outputs=2
+2026-11-02 19:54:13 [INFO] test_cig model=cigarette detections=1
+2026-11-02 19:54:17 [INFO] test_cig task stopped
+2026-11-02 19:54:17 [INFO] task stopped: test_cig

@@ -1,0 +1,11 @@
+任务停止按钮验证与根因（2026-11-06）
+现象：点击“停止”无反应/超时，Playwright 报 n-data-table--loading 覆盖层 intercepts pointer events。
+根因：任务管理页 n-data-table :loading="loading"；getList/updateTaskStatus 期间整表 loading 覆盖层拦截按钮点击。
+修复：web/src/views/bi/task-management/Index.vue 改为
+  :loading="loading && taskData.length === 0"
+即已有数据后刷新不再盖住操作列。
+修复后实测（Playwright，登录 testuser）：
+  点击“停止” -> PATCH .../6488.../2 HTTP 200
+  点击“启动” -> PATCH .../6488.../1 HTTP 200
+  两次均 isSuccess=true，按钮可点击。
+dist 已重新构建并部署（dist.bak_20261106_alg）。

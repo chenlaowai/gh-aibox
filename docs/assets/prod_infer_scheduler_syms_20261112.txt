@@ -1,0 +1,64 @@
+# 生产盒子推理/任务调度证据（只读采集，未修改生产任何文件）
+
+采集时间：2026-11-12
+目标：10.10.207.46 上的 /libEdgeSystem.so（分析副本 .work/libEdgeSystem_prod.so）
+方法：ELF 动态符号表（node .work/parse_elf.js）+ Ghidra 12.1.4 headless
+      （脚本 .work/ghidra_scripts/DemangleSyms.java、DumpRange2.java）
+
+复现命令（开发工作区）：
+
+    node .work/parse_elf.js .work/libEdgeSystem_prod.so > .work/prod_syms_sized.txt
+    .toolchains/ghidra/ghidra_12.1.4_PUBLIC/support/analyzeHeadless.bat \
+      ghidra_proj edgefast2 -process libEdgeSystem_prod.so -noanalysis \
+      -scriptPath .work/ghidra_scripts \
+      -postScript DemangleSyms.java <out.txt> "TaskInstance,ImageInference,MergeInstance"
+
+## 关键符号（地址/长度来自 ELF dynsym，签名来自 Itanium demangle）
+
+    0x1654190   1960  ImageTaskInstance::workLoop(void)
+    0x1653528      4  ImageTaskInstance::onInferenceFinished(Json::Value&, std::shared_ptr<void> const&)
+    0x1653794     68  ImageTaskInstance::ImageTaskInstance(void)
+    0x1653ce4   1132  ImageTaskInstance::UpdateConfig(std::shared_ptr<ImageTaskArchive> const&)
+    0x15db298   1372  sdkImageInference(std::shared_ptr<void> const&, std::vector<int> const&,
+                        std::vector<int> const&, std::string const&, std::string const&,
+                        std::shared_ptr<void> const&, Json::Value const&,
+                        std::vector<std::shared_ptr<TaskRegion>> const&,
+                        std::function<void(Json::Value&, std::shared_ptr<void> const&)> const&)
+    0x15db7f4    240  sdkImageInference(std::vector<int> const&, std::vector<int> const&,
+                        std::string const&, std::string const&, std::shared_ptr<void> const&,
+                        std::function<void(Json::Value&, std::shared_ptr<void> const&)> const&)
+    0x15dbea4    240  sdkImageInference(std::vector<int> const&, std::vector<int> const&,
+                        std::shared_ptr<board::base_frame> const&, std::string const&,
+                        std::shared_ptr<void> const&,
+                        std::function<void(Json::Value&, std::shared_ptr<void> const&)> const&)
+    0x16d315c    212  TaskInstance::onAllAlgoSkipped(std::shared_ptr<void> const&, unsigned long)
+    0x16d7d44    768  TaskInstance::collectTaskResult(std::shared_ptr<FramePackage> const&)
+    0x16dc43c   3376  TaskInstance::analysisAlarm(unsigned char, std::shared_ptr<FramePackage>&)
+    0x1612be4    632  FramePackage::setBoxes(unsigned long, std::vector<std::shared_ptr<Box>>&)
+    0x1608c68    168  TrackBoxesByHandler(std::shared_ptr<void>&, std::vector<std::shared_ptr<board::base_box>>&)
+    0x162c428   5060  FramePackage::algoSubmitted(boost::multiprecision::cpp_int&)
+    0x15fe5c8    604  ThreadSafeLazyQueue<std::shared_ptr<FramePackage>>::ThreadSafeLazyQueue(
+                        unsigned, unsigned char, std::function<...> const&)
+    0x15fd77c    656  ThreadSafeLazyQueue<std::shared_ptr<FramePackage>>::Push(
+                        std::shared_ptr<FramePackage>, bool)
+    0x166058c    100  MergeInstance::setTaskInstance(int, std::shared_ptr<TaskInstance> const&)
+    0x1682948    224  sf::mt::thread_safe_map<std::string, ImageTaskInstance*>::erase(std::string const&)
+
+## 结论（用于我们自己的调度改造）
+
+1. 每个图像任务有自己的 `workLoop` + 完成回调：推理请求带 frame/regions 异步投递，
+   结果回到 `ImageTaskInstance::onInferenceFinished`；不是所有任务共用一把锁同步等结果。
+2. 生产显式存在 `TaskInstance::onAllAlgoSkipped` 与 `FramePackage::algoSubmitted`：
+   某个任务这一帧的算法没跟上时整帧跳过，而不是把请求堆进队列让别的任务饿死。
+3. 帧队列是 `ThreadSafeLazyQueue<shared_ptr<FramePackage>>`（Push + lazily pop），
+   即“只保留最新帧/按需取”，和我们推理队列 latest-only 的取舍一致。
+4. `FramePackage::setBoxes` 按帧号存框，`TrackBoxesByHandler` 把同一帧的框交给消费方，
+   与我们的 `dets_history_` + 预览跟踪对齐。
+5. 未发现“所有算法共用一把全局推理锁”的符号；`sdkImageInference` 以回调返回，
+   调用方不阻塞在全局锁上。
+
+## 局限
+
+Ghidra 对去符号的 ARM64 反编译可读性有限（大量 `func_0x...` 间接调用），
+`TaskInstance_onAllAlgoSkipped`/`sdkImageInference` 的伪代码不足以逐行引用。
+因此这里以“符号 + 签名 + 地址/长度”作为设计证据，不臆测未证实的内部实现细节。

@@ -1,0 +1,10 @@
+2026-11-02 19:50:07 [INFO] task started: 6488bb6c-c3c2-4011-ac65-2b1f27921cc9 group=2 slot=3
+2026-11-02 19:50:09 [INFO] 6488bb6c-c3c2-4011-ac65-2b1f27921cc9 decoder opened shape=1,3,1440,2560
+2026-11-02 19:50:09 [INFO] model loaded: reflectivejacket /data/CT/project/ai/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel input=1,3,640,640 outputs=1
+2026-11-02 19:50:09 [INFO] model loaded: safetyhelmet /data/CT/project/ai/models/BM1684X/damoyolo_tinynasL25_S_safetyhelmet.bmodel input=1,3,640,640 outputs=2
+2026-11-02 19:50:13 [WARN] 6488bb6c-c3c2-4011-ac65-2b1f27921cc9 ALARM model=reflectivejacket count=0 img=/data/CT/project/ai/inference/save/6488bb6c-c3c2-4011-ac65-2b1f27921cc9/reflectivejacket/img/20261102_195012.jpg
+2026-11-02 19:50:13 [INFO] 6488bb6c-c3c2-4011-ac65-2b1f27921cc9 video dump started, waiting 6s
+2026-11-02 19:50:19 [INFO] alarm reported: 6488bb6c-c3c2-4011-ac65-2b1f27921cc9
+2026-11-02 19:51:01 [WARN] 6488bb6c-c3c2-4011-ac65-2b1f27921cc9 ALARM model=safetyhelmet count=1 img=/data/CT/project/ai/inference/save/6488bb6c-c3c2-4011-ac65-2b1f27921cc9/safetyhelmet/img/20261102_195101.jpg
+2026-11-02 19:51:01 [INFO] 6488bb6c-c3c2-4011-ac65-2b1f27921cc9 video dump started, waiting 6s
+2026-11-02 19:51:07 [INFO] alarm reported: 6488bb6c-c3c2-4011-ac65-2b1f27921cc9

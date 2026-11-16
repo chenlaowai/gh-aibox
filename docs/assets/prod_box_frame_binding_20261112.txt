@@ -1,0 +1,39 @@
+生产盒子“检测框绑定到具体帧”逆向记录
+日期: 2026-11-12
+约束: 只读访问生产 10.10.207.46；分析用副本 E:\cjs\CT\LM\Project\dsh_7\.work\libEdgeSystem_prod.so
+工具: rea 6.8.0 + Ghidra 12.1.4（Windows Ghidra provider 只接受 PE/raw，ELF 改用同一 Ghidra
+      引擎 headless 反汇编；rea 仍用于安装/provider 校验），以及生产机上的 readelf/nm/objdump/strings。
+
+1. 框按帧号存取（不是“最新检测结果”）
+   $ readelf -sW /data/app/libEdgeSystem.so | grep -E 'FramePackage.*(setBoxes|getBoxes)'
+   0000000001612be4   632 FUNC GLOBAL DEFAULT 11 _ZN12FramePackage8setBoxesEmRSt6vectorISt10shared_ptrI3BoxESaIS3_EE
+   000000000160c940   132 FUNC GLOBAL DEFAULT 11 _ZN12FramePackage8getBoxesEm
+   签名: setBoxes(unsigned long frameId, vector<shared_ptr<Box>>&)
+         getBoxes(unsigned long frameId)
+   结论: 框的键是帧号（unsigned long），一帧一组框；不存在“把最新一组框套到任意预览帧”。
+
+2. 目标身份由 IoU tracker 维护
+   $ nm -D -C /data/app/libboard_sdk_bm.so | grep -E 'IoUTracker|get_iou_tracker'
+   00000000003e46d8 T board::track::IoUTracker::process(vector<shared_ptr<base_box>>&, int, int)
+   00000000003e4330 T board::track::IoUTracker::IoUTracker(float, int, function<void(unsigned long&)>)
+   0000000000367530 T board::track::get_iou_tracker(int, float, function<void(unsigned long&)> const&)
+   反汇编 process 可见：对上一帧轨迹与当前帧框计算 box_cal_iou，按 IoU 排序后分配/回收
+   track id；未匹配轨迹按 max_lost 计数后 deregister_id。
+
+3. 框与帧的交付入口
+   $ nm -D -C /data/app/libEdgeSystem.so | grep -E 'TrackBoxesByHandler|onFrameDetectFinished'
+   0000000001608c68 T TrackBoxesByHandler(shared_ptr<void>&, vector<shared_ptr<board::base_box>>&)
+   00000000015fbbb0 T DecodeInstance::imagePoped(unsigned char, shared_ptr<FramePackage>&)
+   $ objdump -d --start-address=0x1608c68 --stop-address=0x1608d10 -C ...
+   1608c68: ldr x2,[x0]            ; handler
+   1608cb4: blr x4                ; handler(boxes)
+   结论: 解码帧进入 FramePackage，检测完成后 setBoxes(frameId, boxes)；预览/告警消费同一个
+         FramePackage 的 getBoxes(frameId)，因此画面与框属于同一帧。
+
+4. 对本项目的适配（不照搬生产内部结构）
+   SAIL 3.11 Decoder 不暴露 FramePackage/frameId，因此用等价的“帧时间 + 轨迹历史”实现：
+   - 每次检测结果带 frame_ts，按 (ts, boxes) 入 dets_history；
+   - 预览轨迹保存 (ts, box) 历史；新检测到来时，用检测帧时间找到轨迹在那帧的姿态，
+     只把“检测框 - 该帧姿态”的 delta 应用到当前姿态，绝不把框重置回旧帧位置；
+   - 帧间用 LK + 模板匹配推进，框中心离开 ROI 立即删除；新检测快照中无对应框/无人员锚点
+     的轨迹按 snapshot 删除，不再用 1s active TTL 留边缘框。

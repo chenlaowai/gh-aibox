@@ -1,0 +1,286 @@
+/* fade */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease-in-out;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* fade-slide */
+.fade-slide-leave-active,
+.fade-slide-enter-active {
+  transition: all 0.3s;
+}
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+/* fade-bottom */
+.fade-bottom-enter-active,
+.fade-bottom-leave-active {
+  transition:
+    opacity 0.25s,
+    transform 0.3s;
+}
+.fade-bottom-enter-from {
+  opacity: 0;
+  transform: translateY(-10%);
+}
+.fade-bottom-leave-to {
+  opacity: 0;
+  transform: translateY(10%);
+}
+
+/* fade-scale */
+.fade-scale-leave-active,
+.fade-scale-enter-active {
+  transition: all 0.28s;
+}
+.fade-scale-enter-from {
+  opacity: 0;
+  transform: scale(1.2);
+}
+.fade-scale-leave-to {
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+/* zoom-fade */
+.zoom-fade-enter-active,
+.zoom-fade-leave-active {
+  transition:
+    transform 0.2s,
+    opacity 0.3s ease-out;
+}
+.zoom-fade-enter-from {
+  opacity: 0;
+  transform: scale(0.92);
+}
+.zoom-fade-leave-to {
+  opacity: 0;
+  transform: scale(1.06);
+}
+
+/* zoom-out */
+.zoom-out-enter-active,
+.zoom-out-leave-active {
+  transition:
+    opacity 0.1s ease-in-out,
+    transform 0.15s ease-out;
+}
+.zoom-out-enter-from,
+.zoom-out-leave-to {
+  opacity: 0;
+  transform: scale(0);
+}
+
+/* fade */
+.fade-enter-active,
+.fade-leave-active {
+  transition:
+    opacity 0.2s,
+    filter 0.2s ease-out;
+}
+
+.fade-enter-from {
+  opacity: 0;
+  filter: blur(10px);
+}
+
+.fade-leave-to {
+  opacity: 0;
+  filter: blur(0px);
+}
+
+/* ========== 通用动效类 ========== */
+
+/* fadeIn - 淡入动效 */
+.fadeIn {
+  animation: fadeIn 0.25s ease-in-out;
+}
+
+.fadeIn-fast {
+  animation: fadeIn 0.15s ease-in-out;
+}
+
+.fadeIn-slow {
+  animation: fadeIn 0.4s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* slideInUp - 从下往上滑入 */
+.slideInUp {
+  animation: slideInUp 0.3s ease-out;
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* slideInDown - 从上往下滑入 */
+.slideInDown {
+  animation: slideInDown 0.3s ease-out;
+}
+
+@keyframes slideInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* slideInLeft - 从左往右滑入 */
+.slideInLeft {
+  animation: slideInLeft 0.3s ease-out;
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* slideInRight - 从右往左滑入 */
+.slideInRight {
+  animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* scaleIn - 缩放淡入 */
+.scaleIn {
+  animation: scaleIn 0.25s ease-out;
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* zoomIn - 放大淡入 */
+.zoomIn {
+  animation: zoomIn 0.3s ease-out;
+}
+
+@keyframes zoomIn {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ========== 悬浮效果 ========== */
+
+/* hover-lift - 悬浮上升 */
+.hover-lift {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* hover-scale - 悬浮缩放 */
+.hover-scale {
+  transition: transform 0.2s ease;
+}
+
+.hover-scale:hover {
+  transform: scale(1.05);
+}
+
+/* hover-glow - 悬浮发光 */
+.hover-glow {
+  transition: box-shadow 0.3s ease;
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px rgba(0, 140, 255, 0.5);
+}
+
+/* ========== 脉冲和呼吸效果 ========== */
+
+/* pulse - 脉冲效果 */
+.pulse {
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* breathing - 呼吸效果 */
+.breathing {
+  animation: breathing 3s ease-in-out infinite;
+}
+
+@keyframes breathing {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}

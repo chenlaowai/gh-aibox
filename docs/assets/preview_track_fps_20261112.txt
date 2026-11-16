@@ -1,0 +1,21 @@
+预览帧率实测（.25，2026-11-12 13:00 左右，36 路任务运行中）
+测试方法：Node WebSocket 连接 ws://10.10.206.25:9000/ws/frame，订阅 10.0s，统计服务端推送的 JPEG 帧数。
+命令：node .work/browser/count_ws.js <taskId|all_1>
+
+单通道 数智技术中心_通道 (b062eeab...):
+  frames 85 / 10032 ms = 8.5 fps
+
+合流 all_1:
+  frames 77 / 10028 ms = 7.7 fps
+
+优化前（track9，帧跟踪仍在解码线程做全分辨率 BGR 转换）:
+  单通道 44 / 10025 ms = 4.4 fps
+  合流 82 / 10035 ms = 8.2 fps
+
+优化：track_preview_boxes 先 bmcv.vpp_resize 到 960 宽，再 vpp_convert_format(BGR_PACKED)，
+      只把 960x540 拷回 CPU；不再是 2560x1440 全帧 convert+clone。
+结论：单通道从 4.4fps 恢复到 8.5fps（源 25fps，10fps 令牌桶上限、36 路并发下）。
+
+最终 track16 部署后（冷启动 + 30s 预热，29 路任务）:
+  单通道 b062: frames 87 / 10036 ms = 8.7 fps
+  合流 all_1:  frames 87 / 10039 ms = 8.7 fps

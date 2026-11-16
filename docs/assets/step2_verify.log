@@ -1,0 +1,111 @@
+=== [1/3] build official demo ===
+=== compiling official YOLOv8_plus_det demo ===
+In file included from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/common.h:488,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/avutil.h:296,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/samplefmt.h:24,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavcodec/avcodec.h:31,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/include/opencv4/opencv2/core/mat.hpp:62,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/include/opencv4/opencv2/core.hpp:59,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/include/opencv4/opencv2/opencv.hpp:52,
+                 from /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.hpp:16,
+                 from /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/main.cpp:15:
+/data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/mem.h:342:79: warning: ‘alloc_size’ attribute ignored on a function returning ‘int’ [-Wattributes]
+  342 | av_alloc_size(2, 3) int av_reallocp_array(void *ptr, size_t nmemb, size_t size);
+      |                                                                               ^
+In file included from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/common.h:488,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/avutil.h:296,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/samplefmt.h:24,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavcodec/avcodec.h:31,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/include/opencv4/opencv2/core/mat.hpp:62,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/include/opencv4/opencv2/core.hpp:59,
+                 from /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/include/opencv4/opencv2/opencv.hpp:52,
+                 from /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.hpp:16,
+                 from /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.cpp:10:
+/data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-ffmpeg_0.15.0/include/libavutil/mem.h:342:79: warning: ‘alloc_size’ attribute ignored on a function returning ‘int’ [-Wattributes]
+  342 | av_alloc_size(2, 3) int av_reallocp_array(void *ptr, size_t nmemb, size_t size);
+      |                                                                               ^
+/data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.cpp: In member function ‘void YoloV8_det::draw_result(cv::Mat&, YoloV8BoxVec&)’:
+/data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.cpp:533:37: warning: narrowing conversion of ‘(& result)->std::vector<YoloV8Box>::operator[](((std::vector<YoloV8Box>::size_type)i)).YoloV8Box::x1’ from ‘float’ to ‘int’ [-Wnarrowing]
+  533 |         cv::Rect bound = {result[i].x1, result[i].y1, result[i].x2 - result[i].x1, result[i].y2 - result[i].y1};
+/data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.cpp:533:51: warning: narrowing conversion of ‘(& result)->std::vector<YoloV8Box>::operator[](((std::vector<YoloV8Box>::size_type)i)).YoloV8Box::y1’ from ‘float’ to ‘int’ [-Wnarrowing]
+  533 |         cv::Rect bound = {result[i].x1, result[i].y1, result[i].x2 - result[i].x1, result[i].y2 - result[i].y1};
+/data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.cpp:533:68: warning: narrowing conversion of ‘((& result)->std::vector<YoloV8Box>::operator[](((std::vector<YoloV8Box>::size_type)i)).YoloV8Box::x2 - (& result)->std::vector<YoloV8Box>::operator[](((std::vector<YoloV8Box>::size_type)i)).YoloV8Box::x1)’ from ‘float’ to ‘int’ [-Wnarrowing]
+  533 |         cv::Rect bound = {result[i].x1, result[i].y1, result[i].x2 - result[i].x1, result[i].y2 - result[i].y1};
+/data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/cpp/yolov8_bmcv/yolov8_det.cpp:533:97: warning: narrowing conversion of ‘((& result)->std::vector<YoloV8Box>::operator[](((std::vector<YoloV8Box>::size_type)i)).YoloV8Box::y2 - (& result)->std::vector<YoloV8Box>::operator[](((std::vector<YoloV8Box>::size_type)i)).YoloV8Box::y1)’ from ‘float’ to ‘int’ [-Wnarrowing]
+  533 |         cv::Rect bound = {result[i].x1, result[i].y1, result[i].x2 - result[i].x1, result[i].y2 - result[i].y1};
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 3 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 4 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 5 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 6 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 7 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 8 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/libsophon_soc_0.5.3_aarch64/opt/sophon/libsophon-0.5.3/lib/libbmcv.so: .dynsym local symbol at index 9 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 3 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 4 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 5 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 6 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 7 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 8 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_core.so: .dynsym local symbol at index 9 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 3 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 4 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 5 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 6 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 7 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 8 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgproc.so: .dynsym local symbol at index 9 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 3 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 4 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 5 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 6 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 7 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 8 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_highgui.so: .dynsym local symbol at index 9 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 3 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 4 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 5 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 6 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 7 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 8 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_imgcodecs.so: .dynsym local symbol at index 9 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 3 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 4 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 5 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 6 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 7 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 8 (>= sh_info of 3)
+/usr/bin/ld: /data/CT/project/ai/gh-aibox-dev/env/sdk/sophon-mw-soc_0.15.0_aarch64/opt/sophon/sophon-opencv_0.15.0/lib/libopencv_videoio.so: .dynsym local symbol at index 9 (>= sh_info of 3)
+OK: /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/bin/yolov11s_reflectivejacket_demo
+=== [2/3] run official demo ===
+=== running demo ===
+Your model's output is not efficient for cpp, please refer to the docs/YOLOv8_Export_Guide.md to export model which has transposed output.
+1/3, img_file: /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/data/images/reflective_jacket_1280x720.jpg
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+Open /dev/jpu successfully, device index = 0, jpu fd = 19, vpp fd = 20
+2/3, img_file: /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/data/images/reflective_jacket_1280x720_2.jpg
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+3/3, img_file: /data/CT/project/ai/gh-aibox-dev/tests/yolov11_official_demo/data/images/reflective_jacket_1920x1080.jpg
+Failed to open /proc/jpuinfo: Permission denied
+Failed to open /proc/jpuinfo: Permission denied
+================
+result saved in results/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel_images_bmcv_cpp_result.json
+
+############################
+SUMMARY: yolov8 test
+############################
+[         decode time]  loops:    3 avg: 15.202000 ms
+[   yolov8 preprocess]  loops:    3 avg: 1.668000 ms
+[    yolov8 inference]  loops:    3 avg: 5.214000 ms
+[  yolov8 postprocess]  loops:    3 avg: 0.245000 ms
+
+=== output ===
+results/images/reflective_jacket_1280x720.jpg 292184 bytes
+results/images/reflective_jacket_1280x720_2.jpg 293392 bytes
+results/images/reflective_jacket_1920x1080.jpg 501792 bytes
+results/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel_images_bmcv_cpp_result.json 3826 bytes
+=== [3/3] check results ===
+result_json=yolov11s_fp16_1b_back_reflectivejacket_1.bmodel_images_bmcv_cpp_result.json
+images=3 detections=14 per_class={0: 11, 1: 3}
+PASS: demo produced detections

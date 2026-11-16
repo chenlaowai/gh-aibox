@@ -1,0 +1,68 @@
+services:
+  aidetect:
+    image: aidetect:dev
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: aidetect
+    privileged: true
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    environment:
+      AIDETECT_JWT_SECRET: "${AIDETECT_JWT_SECRET:?set AIDETECT_JWT_SECRET in .env}"
+      AIDETECT_CONFIG_BASE: "http://10.10.206.68"
+      AIDETECT_REPORT_BASE: "http://127.0.0.1"
+      AIDETECT_MODEL_ROOT: "/models/BM1684X"
+      AIDETECT_DATA_ROOT: "/data/CT/project/ai/inference/save"
+      AIDETECT_TMP_ROOT: "/data/CT/project/ai/inference/video_transtation"
+      AIDETECT_PORT: "9000"
+      AIDETECT_ISC_PROXY: "10.10.206.25:10443"
+      AIDETECT_ISC_RTSP_PROXY: "10.10.206.25:10444"
+      AIDETECT_DECODE_MODE: "multi"
+      AIDETECT_MAX_HIGHRES_TASKS: "36"
+      AIDETECT_PREVIEW_INTERVAL_MS: "100"
+      AIDETECT_NO_PREVIEW: "1"
+    volumes:
+      - /data/CT/project/ai/models:/models:ro
+      - /data/CT/project/ai/inference/save:/data/CT/project/ai/inference/save
+      - /data/CT/project/ai/inference/video_transtation:/data/CT/project/ai/inference/video_transtation
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,13 @@
+version: '3.4'
+
+services:
+  aibox-admin-api:
+    image: ${DOCKER_REGISTRY-}hnkc-aibox-admin-api
+    volumes:
+      - ./src/BuildingBlocks/HNKC.AIBox.Entities/Docs/data.db:/app/Data/data.db
+      - ./src/Services/HNKC.AIBox.Admin.Api/plugins:/app/plugins
+    restart: always
+    build:
+      context: .
+      dockerfile: src/Services/HNKC.AIBox.Admin.Api/Dockerfile
+

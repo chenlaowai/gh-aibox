@@ -1,0 +1,58 @@
+# 15 任务并行时推理调度改造前后实测（2026-11-12，开发盒子 .25）
+
+场景：15 个任务同时 running（测试_1~14 + 数智技术中心_通道），其中测试_2 是
+3840x2160 的 MP4 源（vest / smoking_call / boat_life_jacket / helmet_v3 + 基础人员
+4 个算法 + 1 个基础人员模型 = 5 个 runtime），其余多为 4K/2560x1440 测试源。
+采集方式：容器内 `AIDETECT_PROFILE`（或 `touch /tmp/aidetect_profile`）打开统计，
+`docker logs --since 25s aidetect | grep "infer stats\|detect round"`。
+
+## 改造前（track17，全局 infer_mu_ 串行）
+
+    2026-11-12 16:11:33 [INFO] infer stats 5s peak_inflight=15 | boat_life_jacket n=6 avg=194 wait_avg=192 max=217 wait_max=215 | helmet_v3 n=6 avg=150 wait_avg=147 max=191 wait_max=189 | people n=30 avg=182 wait_avg=173 max=227 wait_max=218 | people_big n=331 avg=188 wait_avg=174 max=381 wait_max=369 | smoking_call n=6 avg=183 wait_avg=180 max=186 wait_max=183 | vest n=6 avg=191 wait_avg=189 max=209 wait_max=206
+    2026-11-12 16:11:34 [INFO] 925ece7c-b4d5-4257-a2f3-8c62df8b131c detect round ms=1703 models=5 base=8 all=5 res=3840x2160
+    2026-11-12 16:11:37 [INFO] 925ece7c-b4d5-4257-a2f3-8c62df8b131c detect round ms=1665 models=5 base=8 all=5 res=3840x2160
+
+- 一次推理 187ms，其中 172ms 在等全局锁（TPU 真正计算只有约 15ms）。
+- 同时排队 15 个请求，谁抢到锁谁跑；测试_2 一轮要 1.7s，两轮间隔约 3s。
+- 预览端“检测快照超过 1.5s 就隐藏”的保护因此生效：15 任务时测试_2 画面
+  **完全没有框**（图 `preview_test2_starved_15tasks_20261112.jpg`）。
+
+## 改造后（sched6，FIFO 公平闸门 + 并发=2 + 需求上限）
+
+    2026-11-12 17:08:15 [INFO] infer stats 5s peak_pending=4 | boat_life_jacket n=11 avg=2 wait_avg=0 max=7 wait_max=0 | helmet_v3 n=11 avg=3 wait_avg=0 max=7 wait_max=0 | people n=22 avg=10 wait_avg=0 max=18 wait_max=1 | people_big n=142 avg=15 wait_avg=0 max=34 wait_max=10 | smoking_call n=8 avg=2 wait_avg=0 max=6 wait_max=0 | vest n=11 avg=3 wait_avg=0 max=8 wait_max=4
+    2026-11-12 17:08:13 [INFO] 925ece7c-b4d5-4257-a2f3-8c62df8b131c detect round ms=32 models=5 base=8 all=3 res=3840x2160
+    2026-11-12 17:08:15 [INFO] 925ece7c-b4d5-4257-a2f3-8c62df8b131c detect round ms=22 models=5 base=8 all=3 res=3840x2160
+    2026-11-12 17:08:18 [INFO] 925ece7c-b4d5-4257-a2f3-8c62df8b131c detect round ms=26 models=5 base=8 all=3 res=3840x2160
+
+- 等锁时间 0ms；测试_2 一轮 22~32ms（改造前 1665~1703ms），检测快照 2.9Hz。
+- 15 任务下测试_2 画面正常出框、标签贴框（图
+  `preview_test2_boxes_15tasks_20261112.jpg`、
+  `preview_test2_follow_20261112.jpg`、`preview_test2_follow2_20261112.jpg`）。
+- `/debug/scheduler`：6 个模型各 1 个实例，`busy=0`（需求没有把实例池打满）。
+
+## 预览帧率（`node .work/browser/count_ws.js <id>`，10s）
+
+| 通道 | 改造前（track17） | 改造后（sched6） |
+|---|---|---|
+| 测试_2 单通道（4K→1080p） | 6.4~6.7 fps | 5.2~6.4 fps |
+| all_1 合流（9 格） | 4.7~4.9 fps | 4.9~5.2 fps |
+| 数智技术中心_通道 单通道（2.5K） | 9.9 fps | 9.9 fps |
+
+说明：单通道在 4K 源上略降（约 0.3~1 fps），合流略升；同一轮测量里旧版
+`preview_test2_starved_15tasks_20261112.jpg` 完全没有框，新版有框且跟人。
+
+## 复现命令
+
+    # 打包 + 上传 + 编译 + 部署
+    tar -czf .work/src_sched6.tgz -C gh-aibox-dev src CMakeLists.txt
+    pwsh -File .work/dev/push.ps1 -Local .work/src_sched6.tgz -Remote /tmp/src_sched6.tgz
+    pwsh -File .work/dev/run-25.ps1 -Script .work/dev/_deploy_sched.sh
+
+    # 统计
+    pwsh -File .work/dev/run-25.ps1 -Script .work/dev/_t.sh   # 内含 docker logs grep
+
+    # 帧率
+    node .work/browser/count_ws.js 925ece7c-b4d5-4257-a2f3-8c62df8b131c
+
+    # 预览抓帧
+    node .work/browser/cap_long.js 925ece7c-b4d5-4257-a2f3-8c62df8b131c .work/t2_c6 90
