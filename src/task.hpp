@@ -759,15 +759,21 @@ private:
             upstream_url_ = source;
             while (!stop_) {
                 if (gateway_pid_.empty()) {
-                    bool gateway_ok = isc_source ? start_isc_gateway()
-                                                 : start_gateway(source);
+                    bool gateway_ok = true;
+                    if (direct_decode_enabled() && !isc_source) {
+                        source_url_ = direct_decode_url();
+                        gateway_ok = !source_url_.empty();
+                    } else {
+                        gateway_ok = isc_source ? start_isc_gateway()
+                                               : start_gateway(source);
+                    }
                     if (!gateway_ok) {
                         ++open_fail_count_;
                         publish_status("正在连接监控视频流...");
                         std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                         continue;
                     }
-                    start_recorder();
+                    if (!direct_decode_enabled()) start_recorder();
                 }
                 try {
                     std::lock_guard<std::mutex> hw(decode_hw_mutex());
@@ -854,14 +860,20 @@ private:
                         }
                         decoder_ = nullptr;
                         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-                        bool gateway_ok = isc_source ? start_isc_gateway()
-                                                     : start_gateway(source);
+                        bool gateway_ok = true;
+                        if (direct_decode_enabled() && !isc_source) {
+                            source_url_ = direct_decode_url();
+                            gateway_ok = !source_url_.empty();
+                        } else {
+                            gateway_ok = isc_source ? start_isc_gateway()
+                                                   : start_gateway(source);
+                        }
                         if (!gateway_ok) {
                             ++open_fail_count_;
                             std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                             continue;
                         }
-                        restart_recorder();
+                        if (!direct_decode_enabled()) restart_recorder();
                         try {
                             std::lock_guard<std::mutex> hw(decode_hw_mutex());
                             decoder_holder = std::make_unique<sail::Decoder>(source_url_, true, 0);
@@ -4057,6 +4069,60 @@ private:
     // only work on the main stream, others on the sub stream; RTMP is the
     // vendor's protocol but a few boxes/ports only allow RTSP. Try a short,
     // ordered candidate list instead of retrying the same URL forever.
+    // Single-process ingest: sail::Decoder can open an rtsp:// URL or a local
+    // file directly (verified on this box), so the external ffmpeg gateway is
+    // optional.  Production keeps one decode instance per channel in-process;
+    // this is the same model and removes 30+ helper processes + the UDP hop.
+    bool direct_decode_enabled() const {
+        static const bool on = [] {
+            const char* v = std::getenv("AIDETECT_DIRECT_DECODE");
+            return !v || std::string(v) != "0";
+        }();
+        return on;
+    }
+    std::string direct_decode_url() {
+        if (cfg_.channel_address.rfind("isc://", 0) != 0)
+            return cfg_.channel_address;
+        // ISC: walk the same candidate list and hand the first resolvable URL
+        // to the decoder instead of spawning a gateway.
+        int base_st = IscResolver::stream_type_of(cfg_.channel_address);
+        std::string base_proto =
+            cfg_.channel_address.find("protocol=rtmp") != std::string::npos ? "rtmp" : "rtsp";
+        std::vector<std::pair<std::string, int>> cands;
+        auto add = [&](const std::string& proto, int st) {
+            std::string p = (proto == "rtmp") ? "rtmp" : "rtsp";
+            int s = st == 1 ? 1 : 0;
+            for (auto& c : cands)
+                if (c.first == p && c.second == s) return;
+            cands.push_back({p, s});
+        };
+        add(base_proto, base_st);
+        add(base_proto == "rtsp" ? "rtmp" : "rtsp", base_st);
+        add(base_proto, base_st == 0 ? 1 : 0);
+        add(base_proto == "rtsp" ? "rtmp" : "rtsp", base_st == 0 ? 1 : 0);
+        if (isc_rot_ > 0 && !cands.empty()) {
+            const size_t k = static_cast<size_t>(isc_rot_) % cands.size();
+            std::rotate(cands.begin(), cands.begin() + k, cands.end());
+        }
+        for (auto& c : cands) {
+            last_progress_ms_ = now_ms();
+            try {
+                std::string url =
+                    IscResolver::resolve(cfg_.channel_address, c.first, c.second);
+                if (!url.empty()) {
+                    log_info(cfg_.task_id + " direct decode " + c.first +
+                             " streamType=" + std::to_string(c.second));
+                    return url;
+                }
+            } catch (const std::exception& e) {
+                log_warn(cfg_.task_id + " ISC direct " + c.first + "/" +
+                         std::to_string(c.second) + " failed: " + e.what());
+            }
+        }
+        ++isc_rot_;
+        return {};
+    }
+
     bool start_isc_gateway() {
         int base_st = IscResolver::stream_type_of(cfg_.channel_address);
         // Production MediaUrl uses protocol=rtmp&transcode=1. Prefer the
