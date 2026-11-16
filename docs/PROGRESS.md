@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 63
+iteration: 64
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,29 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 64 — 2026-11-16 — Web 卡死=API 挂死；卡住线程看门狗；单体化第一步：进程内解码上线
+
+- **Web 卡死根因**：`aibox-api` 容器（宿主 1001）**进程挂死**——`:1001/` 直接请求超时，
+  导致 `/aibox/api/Task/GetTaskPage` 超时，AI 侧 `task reconcile: http 404`，36 路全部停止，
+  前端所有 API 请求 pending → 一直转圈。**重启 `aibox-api` 后**：`:1001` 恢复、AI 拉回 36 个任务、
+  页面/接口 200。
+- **卡住线程修复**（第 1 项需求）：
+  1. `Task` 新增 `last_progress_ms_`（候选尝试/网关启动/收到帧都会刷新）+ `lastProgressAgeMs()`；
+  2. `stream supervisor` 原来**跳过“从未出过帧”的任务**（25K/预制场曾因此黑屏 8 小时），
+     现在这类任务若 `lastProgressAgeMs() > 15min`（`AIDETECT_STUCK_TASK_MS` 可调）判定为**卡死**，
+     会 stop+start 重建；
+  3. ISC 解析的 Boost.Beast 同步 HTTP 在 connect/handshake/write/read **每个阶段**都刷新
+     `expires_after(10s)`，避免单阶段无超时导致线程永久挂起。
+- **单体化第一步（进程内解码）已完成并上线**：验证发现 **`sail::Decoder` 可直接打开 rtsp:// 和本地
+  MP4**（实测 RTSP 相机 2560×1440 出 5 帧/355ms、MP4 1920×1088 出 5 帧/250ms）。
+  据此新增 `AIDETECT_DIRECT_DECODE`（默认开）：**非 ISC 源不再启动 ffmpeg 网关**，解码器直接吃源地址。
+  - 实测：**ffmpeg 进程 34 → 10**（只剩 ISC 走网关）、线程 258 → 198、RSS 1.19GB → **583MB**、
+    36 路 **34 ok / 2 connecting**；合流 6.2~7.6fps；4K 测试源预览 1920×1080 正常（有抓图）。
+  - ISC 源暂仍走网关：实测把 ISC 的 `openUrl/...` 直接交给 `sail::Decoder` 会大量
+    `Failed to open input file (AVERROR_INVALIDDATA)`（URL 单次有效/协议细节），
+    需要“每次重连重新 resolve + 打开失败立即换候选”的专门处理，作为下一步。
+- **GitHub**：新建仓库 `chenlaowai/gh-aibox`（main 分支），已推送两次提交并打标签 **v1.0.0 / v1.0.1**。
 
 ### 迭代 63 — 2026-11-16 — 两路 ISC 卡死（8h 无日志）重启恢复；架构说明与 Sophon SDK 评估
 
