@@ -208,7 +208,9 @@ private:
             vout->codecpar->codec_tag = 0;
             vout->time_base = vin->time_base;
 
-            if (use_bsf_) {
+            const bool need_bsf =
+                use_bsf_ || vin->codecpar->codec_id == AV_CODEC_ID_HEVC;
+            if (need_bsf) {
                 const AVBitStreamFilter* f = av_bsf_get_by_name("hevc_mp4toannexb");
                 if (f) {
                     if (av_bsf_alloc(f, &bsf) == 0 &&

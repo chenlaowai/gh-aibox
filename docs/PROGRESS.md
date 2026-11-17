@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 96
+iteration: 97
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,22 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 97 — 2026-11-18 — HEVC bsf 改由 codec_id 判定：排水渠1/乙烯南路2 恢复（2560×1440）
+
+- **根因**：纯 bridge 模式下 `upstream_hevc_` 不再由 ffmpeg 日志判定（没有 ffmpeg 了），
+  于是 `use_bsf_` 恒为 false；HEVC 源（排水渠1 st1、乙烯南路2）封装成 TS 后解码器解不出帧，
+  表现为 “bridge 已起、UDP 有数据，但 30s 无首帧”。
+- **修复**：`IngestBridge` 直接用 `vin->codecpar->codec_id == AV_CODEC_ID_HEVC` 决定启用
+  `hevc_mp4toannexb`，不再依赖调用方的猜测。
+- **效果**：
+  - **排水渠1：connecting → ok 2560×1440**（截图确认有画面）；
+  - **乙烯南路2：connecting → ok 2560×1440**；
+  - 36 路回到 **32 ok / 4 connecting**。
+- **剩余 4 路全部确认为 ISC 侧问题**：
+  - 预制场、25K：本机用 ISC 账号直接探测（st0/st1 都试），**ISC 返回无视频**；
+  - 凤凰咀-游客中心、博物馆：**生产盒子实测同样 0fps**。
+- **状态**：32 ok / 4 connecting、RSS 818MB（预热中）、dmabuf 497、合流墙 8fps。
 
 ### 迭代 96 — 2026-11-18 — ISC 残余 6 路定位：排水渠1 可直连，但 bridge 起始后解码器拿不到帧
 
