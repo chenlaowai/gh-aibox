@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -42,6 +43,21 @@ public:
         dir_ = std::move(dir);
         seg_seconds_ = seg_seconds > 0 ? seg_seconds : 5;
         keep_ = keep > 1 ? keep : 8;
+        // Seed the in-memory index with segments already on disk (after a
+        // process restart the directory may still hold a usable window).
+        segments_.clear();
+        if (std::filesystem::exists(dir_)) {
+            for (auto& e : std::filesystem::directory_iterator(dir_)) {
+                if (!e.is_regular_file()) continue;
+                auto name = e.path().filename().string();
+                if (name.rfind("seg_", 0) != 0) continue;
+                auto t = e.last_write_time().time_since_epoch();
+                int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
+                segments_.push_back({e.path().string(), ms});
+            }
+            std::sort(segments_.begin(), segments_.end(),
+                      [](const Seg& a, const Seg& b) { return a.until_ms < b.until_ms; });
+        }
         running_ = true;
         thread_ = std::thread([this] { loop(); });
         return true;
@@ -71,7 +87,7 @@ public:
             std::ifstream in(s.path, std::ios::binary);
             if (!in.is_open()) continue;
             out << in.rdbuf();
-            total += static_cast<size_t>(in.gcount());
+            total += static_cast<size_t>(std::filesystem::file_size(s.path));
         }
         // Include whatever is in the file being written right now.
         if (file_.is_open()) {
@@ -80,7 +96,7 @@ public:
                 std::ifstream in(cur, std::ios::binary);
                 if (in.is_open()) {
                     out << in.rdbuf();
-                    total += static_cast<size_t>(in.gcount());
+                    total += static_cast<size_t>(std::filesystem::file_size(cur));
                 }
             }
         }

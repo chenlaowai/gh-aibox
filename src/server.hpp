@@ -762,6 +762,9 @@ public:
                 if (is_running(id)) continue;
                 auto resp = start(id);
                 if (resp.value("status", "") == "ok") ++started; else ++failed;
+                if (resp.value("status", "") != "ok")
+                    log_warn("task start failed: " + id + " " +
+                             resp.value("msg", ""));
                 // ISC previewURL creation is rate-limited. Starting 30 tasks
                 // back-to-back caused a burst of DESCRIBE 500 and only ~11
                 // sessions; stagger every task equally.

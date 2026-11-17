@@ -4453,7 +4453,7 @@ private:
         // In-process ES ring (production dump4 equivalent): the ingest bridge
         // keeps the last seconds of encoded packets and writes them to a TS
         // clip, so no URL re-open and no wall-clock <-> PTS mapping is needed.
-        if (rc != 0 && seg_rec_.running()) {
+        if (rc != 0 && seg_rec_.segment_count() > 0) {
             const std::string seg_ts = pending_.tmp_path + ".ts";
             size_t bytes = seg_rec_.clip(5, post, seg_ts);
             if (bytes > 0) {
@@ -4462,15 +4462,6 @@ private:
                 log_info(cfg_.task_id + " segment clip started bytes=" +
                          std::to_string(bytes) + " segs=" +
                          std::to_string(seg_rec_.segment_count()));
-            }
-        }
-        if (rc != 0 && bridge_.running()) {
-            const std::string ts = pending_.tmp_path + ".ts";
-            if (bridge_.start_clip(ts, 5, post)) {
-                rc = 0;
-                async_dump = true;
-                log_info(cfg_.task_id + " bridge clip started pre=5 post=" +
-                         std::to_string(post));
             }
         }
         if (rc != 0 && use_multi_)
