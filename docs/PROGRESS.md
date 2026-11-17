@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 95
+iteration: 96
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,22 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 96 — 2026-11-18 — ISC 残余 6 路定位：排水渠1 可直连，但 bridge 起始后解码器拿不到帧
+
+- **直接探测（本机 ffmpeg + ISC 账号）**：
+  | 相机 | st0 | st1 |
+  |---|---|---|
+  | 预制场 | 无视频 | 无视频 |
+  | 25K | 无视频 | 无视频 |
+  | 排水渠1 | **2560×1440 HEVC ✓** | **640×360 HEVC ✓** |
+  → 预制场/25K 是 **ISC 侧确实拿不到流**（相机离线/ISC 未注册），与生产有画面不一致的部分需 ISC 侧排查。
+- **排水渠1 的情况不一样**：本机能直连拉流，但任务日志显示
+  `rtsp streamType=1 → ingest bridge pid=none`（bridge 已起、UDP 有数据）之后
+  `frame watchdog: no first frame for 30s` —— **bridge 送出了 TS，但解码器解不出帧**。
+  这与“HEVC 源 + 我们 bridge 的封装置换”有关（`upstream_hevc_` 在纯 bridge 模式不再由 ffmpeg 日志判定，
+  bsf 判据失效），是下一轮要修的点：**bridge 直接用 `codecpar->codec_id` 判定 HEVC 并启用 annexb bsf**。
+- **状态**：36 路 30 ok / 6 connecting（全部 ISC）、CPU 266%、RSS 578MB、dmabuf 535、合流墙 8.0fps。
 
 ### 迭代 95 — 2026-11-18 — 五项需求收口：泄漏修复、卡顿解决、告警视频打通、GitHub 就位
 
