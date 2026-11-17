@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 76
+iteration: 77
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,22 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 77 — 2026-11-17 — 告警视频两条路都被证伪：dump rc=5、packet ring clip timeout
+
+- **告警时间戳已修好**：告警图片命名恢复为真实日期（`20261117_123729.jpg`），不再是 1970。
+- **分支日志上线**（`alarm video branch=... rc=... url=...`），实测两条路都失败：
+  1. **`decoder_->dump()` → rc=5**：ISC/网桥(UDP)输入的 sail 解码器上 dump 不可用（文件/RTSP 直连源才支持），
+     这是本轮之前“告警视频没了”的直接原因；
+  2. **packet ring → `clip timeout` → rc=5**：`AlarmRingRecorder` 用“墙钟→包 DTS”映射取窗口，
+     而我们的 bridge 侧时间戳带单调偏移/循环跳变，映射对不上，等待超时。
+- **结论**：要和生产一致（`dump4` 每通道常驻、从解包后的 ES 直接写 MP4），我们必须**自己做**：
+  在 bridge 里保留最近 N 秒的**原始 ES 包环**（按 pts 存），告警时按 pts 窗口取出并 mux 成 MP4——
+  这样既不依赖 URL、也不依赖 wall↔pts 映射。下一轮实现（工作量约 200 行 + 一次验证）。
+- **部署方式**：已验证“热切换”可行（`cp 新二进制到 /data/CT/project/ai/bin` + `kill aidetect`，
+  由容器内 `sh` 监督循环拉起），不再需要 `docker stop`；但**连续多次重建容器会把 VPU 会话耗尽**
+  （表现：3 ok/33 connecting、dmabuf 掉到 354），仍需重启盒子恢复。
+- **状态**：重启后 36 路 **33 ok / 3 connecting**，ffmpeg=0。
 
 ### 迭代 76 — 2026-11-17 — 生产对比文档 + 部署方式改造（热切换，不再 docker stop）
 
