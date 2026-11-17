@@ -121,7 +121,9 @@ private:
             // The alarm clip is a byte-for-byte copy of the same TS stream the
             // decoder sees, so it is always parseable (no second muxer, no
             // extradata/PTS remapping).
-            self->on_ts_bytes(buf + off, n);
+            // Alarm clips are produced from the on-disk segment ring
+            // (TsSegmentRecorder), so the in-memory byte ring is no longer fed.
+            // Keeping it cost ~25 MB per 4K channel.
         }
         return size;
     }
@@ -332,7 +334,7 @@ private:
         std::vector<uint8_t> data;
         int64_t arrival_ms = 0;
     };
-    std::deque<TsChunk> ts_ring_;
+    std::deque<TsChunk> ts_ring_;  // kept empty: clips now come from disk segments
     std::mutex clip_mu_;
     int clip_fd_ = -1;  // raw fd: safe to write from the ingest thread
     int clip_pre_s_ = 5;

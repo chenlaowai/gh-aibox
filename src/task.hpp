@@ -20,6 +20,7 @@
 #include "common.hpp"
 #include "alarm_recorder.hpp"
 #include "ingest_bridge.hpp"
+#include "ts_segment_recorder.hpp"
 #include "decode_pool.hpp"
 #include "isc.hpp"
 #include "model.hpp"
@@ -4073,6 +4074,9 @@ private:
             }
             log_info(cfg_.task_id + " ingest bridge pid=none udp " +
                      std::to_string(p_dec) + "/" + std::to_string(p_rec));
+            const std::string seg_dir = app_.tmp_root + "/" + cfg_.task_id + "/segs";
+            ensure_dir(seg_dir);
+            seg_rec_.start(p_rec, seg_dir, 4, 6);
             return true;
         }
         pid_t pid = fork();
@@ -4279,6 +4283,7 @@ private:
         return false;
     }
     void stop_gateway() {
+        seg_rec_.stop();
         bridge_.stop();
         if (gateway_pid_num_ > 0) {
             ::kill(-gateway_pid_num_, SIGKILL);
@@ -4448,6 +4453,17 @@ private:
         // In-process ES ring (production dump4 equivalent): the ingest bridge
         // keeps the last seconds of encoded packets and writes them to a TS
         // clip, so no URL re-open and no wall-clock <-> PTS mapping is needed.
+        if (rc != 0 && seg_rec_.running()) {
+            const std::string seg_ts = pending_.tmp_path + ".ts";
+            size_t bytes = seg_rec_.clip(5, post, seg_ts);
+            if (bytes > 0) {
+                rc = 0;
+                async_dump = true;
+                log_info(cfg_.task_id + " segment clip started bytes=" +
+                         std::to_string(bytes) + " segs=" +
+                         std::to_string(seg_rec_.segment_count()));
+            }
+        }
         if (rc != 0 && bridge_.running()) {
             const std::string ts = pending_.tmp_path + ".ts";
             if (bridge_.start_clip(ts, 5, post)) {
@@ -4737,6 +4753,9 @@ private:
     // In-process ingest (production keeps the pull/remux stage in its own
     // process): replaces the per-channel ffmpeg child with libavformat.
     IngestBridge bridge_;
+    // Rolling TS segments from the bridge ring port: alarm clips are a byte
+    // concatenation of the last seconds, no PTS/wall-clock mapping involved.
+    TsSegmentRecorder seg_rec_;
     bool inproc_ingest_enabled() const {
         static const bool on = [] {
             const char* v = std::getenv("AIDETECT_INPROC_INGEST");
