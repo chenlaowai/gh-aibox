@@ -23,6 +23,9 @@ extern "C" {
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
+#include <chrono>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -61,6 +64,26 @@ public:
     }
 
     bool running() const { return running_.load(); }
+
+    // Alarm clip: keep the last `pre_s` seconds of encoded packets and write
+    // `pre_s + post_s` seconds to an MPEG-TS file.  Production has the same
+    // in-process recorder (libdump4); doing it here means no URL re-open and
+    // no dependence on wall-clock <-> PTS mapping.
+    bool start_clip(const std::string& path, int pre_s, int post_s) {
+        std::lock_guard<std::mutex> lk(clip_mu_);
+        if (clip_active_) return false;
+        clip_pre_s_ = std::max(1, pre_s);
+        clip_path_ = path;
+        clip_post_s_ = std::max(1, post_s);
+        clip_request_ms_ = now_wall_ms();
+        clip_done_ = false;
+        clip_started_ = false;
+        clip_active_ = true;
+        return true;
+    }
+    bool clip_done() const { return clip_done_.load(); }
+    bool clip_active() const { return clip_active_.load(); }
+    std::string clip_path() { std::lock_guard<std::mutex> lk(clip_mu_); return clip_path_; }
 
     std::string error() {
         std::lock_guard<std::mutex> lk(mu_);
@@ -267,6 +290,17 @@ private:
                     // A short write only means the UDP receiver dropped a
                     // datagram; keep going, the decoder tolerates gaps.
                 }
+                {
+                    std::lock_guard<std::mutex> lk(clip_mu_);
+                    if (clip_active_.load()) {
+                        if (!clip_started_) clip_open(vin);
+                        if (clip_out_) clip_write(pkt);
+                        if (clip_started_ &&
+                            now_wall_ms() > clip_request_ms_ + clip_post_s_ * 1000LL)
+                            clip_close();
+                    }
+                    ring_push(pkt);
+                }
                 av_packet_unref(pkt);
                 // MP4 playback must not outrun real time (ffmpeg's -re).
                 if (loop_file_) {
@@ -293,6 +327,93 @@ private:
         if (rec >= 0) ::close(rec);
     }
 
+    struct RingPkt {
+        AVPacket* pkt = nullptr;
+        int64_t arrival_ms = 0;
+    };
+    std::deque<RingPkt> ring_;
+    std::mutex clip_mu_;
+    AVFormatContext* clip_out_ = nullptr;
+    AVStream* clip_stream_ = nullptr;
+    bool clip_started_ = false;
+    int clip_pre_s_ = 5;
+    int clip_post_s_ = 5;
+    int64_t clip_request_ms_ = 0;
+    std::string clip_path_;
+    std::atomic<bool> clip_active_{false};
+    std::atomic<bool> clip_done_{false};
+    static int64_t now_wall_ms() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    }
+    // Called from the ingest thread for every encoded video packet.
+    void ring_push(const AVPacket* pkt) {
+        auto* dup = av_packet_clone(pkt);
+        if (!dup) return;
+        ring_.push_back({dup, now_wall_ms()});
+        const int64_t keep_ms = (clip_pre_s_ + 4) * 1000LL;
+        const int64_t now = now_wall_ms();
+        while (!ring_.empty() && now - ring_.front().arrival_ms > keep_ms) {
+            av_packet_free(&ring_.front().pkt);
+            ring_.pop_front();
+        }
+    }
+    void clip_write(const AVPacket* pkt) {
+        if (!clip_out_ || !clip_stream_) return;
+        AVPacket* copy = av_packet_clone(pkt);
+        if (!copy) return;
+        copy->stream_index = 0;
+        copy->pos = -1;
+        av_interleaved_write_frame(clip_out_, copy);
+        av_packet_free(&copy);
+    }
+    // Opens the clip muxer and flushes the pre-alarm window from the ring.
+    void clip_open(AVStream* vin) {
+        if (avformat_alloc_output_context2(&clip_out_, nullptr, "mpegts",
+                                           clip_path_.c_str()) < 0 || !clip_out_) {
+            clip_out_ = nullptr;
+            clip_active_ = false;
+            return;
+        }
+        clip_stream_ = avformat_new_stream(clip_out_, nullptr);
+        if (!clip_stream_ ||
+            avcodec_parameters_copy(clip_stream_->codecpar, vin->codecpar) < 0) {
+            avformat_free_context(clip_out_);
+            clip_out_ = nullptr;
+            clip_active_ = false;
+            return;
+        }
+        clip_stream_->codecpar->codec_tag = 0;
+        clip_stream_->time_base = vin->time_base;
+        if (avio_open(&clip_out_->pb, clip_path_.c_str(), AVIO_FLAG_WRITE) < 0) {
+            avformat_free_context(clip_out_);
+            clip_out_ = nullptr;
+            clip_active_ = false;
+            return;
+        }
+        if (avformat_write_header(clip_out_, nullptr) < 0) {
+            avio_closep(&clip_out_->pb);
+            avformat_free_context(clip_out_);
+            clip_out_ = nullptr;
+            clip_active_ = false;
+            return;
+        }
+        clip_started_ = true;
+        const int64_t from_ms = clip_request_ms_ - clip_pre_s_ * 1000LL;
+        for (auto& rp : ring_)
+            if (rp.arrival_ms >= from_ms) clip_write(rp.pkt);
+    }
+    void clip_close() {
+        if (!clip_out_) return;
+        av_write_trailer(clip_out_);
+        if (clip_out_->pb) avio_closep(&clip_out_->pb);
+        avformat_free_context(clip_out_);
+        clip_out_ = nullptr;
+        clip_stream_ = nullptr;
+        clip_active_ = false;
+        clip_done_ = true;
+    }
     std::string url_;
     int dec_port_ = 0;
     int rec_port_ = 0;

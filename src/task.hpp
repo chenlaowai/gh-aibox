@@ -710,7 +710,7 @@ private:
             int grace_ms = grace_env ? std::max(0, std::atoi(grace_env)) : 0;
             if (grace_ms > 0 && !stop_)
                 std::this_thread::sleep_for(std::chrono::milliseconds(grace_ms));
-            if (!std::getenv("AIDETECT_NO_DUMP")) {
+            if (!no_dump_env()) {
                 // Must be enabled before the first read(); enabling after a
                 // frame has already been decoded can crash in SAIL dump.
                 decode_pool_.enable_dump(
@@ -875,7 +875,7 @@ private:
                          std::to_string(high_res_gate().active()) + "/" +
                          std::to_string(high_res_gate().max()));
             }
-            if (!std::getenv("AIDETECT_NO_DUMP"))
+            if (!no_dump_env())
                 decoder_->enable_dump(std::max(12, cfg_.video_duration + 2));
                         int frame_id = 0;
             int fail_count = 0;
@@ -924,7 +924,7 @@ private:
                             decoder_holder = std::make_unique<sail::Decoder>(source_url_, true, 0);
                             if (decoder_holder->is_opened()) {
                                 decoder_ = decoder_holder.get();
-                                if (!std::getenv("AIDETECT_NO_DUMP"))
+                                if (!no_dump_env())
                                     decoder_->enable_dump(
                                         std::max(12, cfg_.video_duration + 2));
                                 fail_count = 0;
@@ -3815,6 +3815,12 @@ private:
         }
         return render_jpeg(frame, bmcv, tw, th, dets);
     }
+    // Image ENV has AIDETECT_NO_DUMP=1 baked in; treat "0" as "dump allowed"
+    // so the container can enable sail dump / bridge clips without a rebuild.
+    static bool no_dump_env() {
+        const char* v = std::getenv("AIDETECT_NO_DUMP");
+        return v && *v && std::string(v) != "0";
+    }
     int dump_in_worker(const std::string& url, int pre, int post,
                        const std::string& out) {
         char exe[PATH_MAX] = {0};
@@ -4151,7 +4157,12 @@ private:
     bool direct_decode_enabled() const {
         static const bool on = [] {
             const char* v = std::getenv("AIDETECT_DIRECT_DECODE");
-            return !v || std::string(v) != "0";
+            if (v && std::string(v) == "0") return false;
+            // /tmp/aidetect_no_direct switches every channel to the ingest
+            // bridge (needed for alarm clips: the bridge keeps the ES ring).
+            // Toggle without recreating the container.
+            if (std::ifstream("/tmp/aidetect_no_direct").good()) return false;
+            return true;
         }();
         return on;
     }
@@ -4434,16 +4445,28 @@ private:
         // Multi mode: MultiDecoder carries its own per-channel dump ring, so
         // the alarm clip is produced in-process (production has the same
         // in-process recorder).  No helper process and no HTTP video service.
+        // In-process ES ring (production dump4 equivalent): the ingest bridge
+        // keeps the last seconds of encoded packets and writes them to a TS
+        // clip, so no URL re-open and no wall-clock <-> PTS mapping is needed.
+        if (rc != 0 && bridge_.running()) {
+            const std::string ts = pending_.tmp_path + ".ts";
+            if (bridge_.start_clip(ts, 5, post)) {
+                rc = 0;
+                async_dump = true;
+                log_info(cfg_.task_id + " bridge clip started pre=5 post=" +
+                         std::to_string(post));
+            }
+        }
         if (rc != 0 && use_multi_)
             rc = decode_pool_.dump(group_, slot_, 5, post, pending_.tmp_path);
         // The box runs with AIDETECT_NO_DUMP=1 to avoid SAIL dump crashes;
         // use the external video service when the packet ring could not
         // produce a file, otherwise HEVC/ISC tasks keep video_path empty.
-        if (rc != 0 && std::getenv("AIDETECT_NO_DUMP")) {
+        if (rc != 0 && no_dump_env()) {
             rc = dump_in_worker(upstream_url_.empty() ? source_url_ : upstream_url_,
                                 5, post, pending_.tmp_path);
         }
-        if (rc != 0 && !std::getenv("AIDETECT_NO_DUMP")) {
+        if (rc != 0 && !no_dump_env()) {
             if (use_multi_) {
                 const char* vurl_env = std::getenv("AIDETECT_VIDEO_URL");
                 std::string vurl = vurl_env ? vurl_env : "10.10.206.68:9071";
@@ -4471,10 +4494,11 @@ private:
                 async_dump = (rc == 0);
             }
         }
-        log_info(cfg_.task_id + " alarm video branch=" +
-                 std::string(recorder_ && recorder_->running() ? "ring" :
-                             (use_multi_ ? "pool-dump" : "decoder-dump")) +
-                 " rc=" + std::to_string(rc) + " url=" +
+        log_info(cfg_.task_id + " alarm video rc=" + std::to_string(rc) +
+                 " bridge=" + std::to_string(bridge_.running() ? 1 : 0) +
+                 " ring=" +
+                 std::to_string(recorder_ && recorder_->running() ? 1 : 0) +
+                 " multi=" + std::to_string(use_multi_ ? 1 : 0) + " url=" +
                  (upstream_url_.empty() ? source_url_ : upstream_url_));
         if (rc != 0) {
             log_warn(cfg_.task_id + " alarm video failed rc=" + std::to_string(rc));
@@ -4547,6 +4571,26 @@ private:
                 std::filesystem::file_size(pending_.tmp_path) > 1024)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        {
+            const std::string ts_src = pending_.tmp_path + ".ts";
+            if (!std::filesystem::exists(pending_.tmp_path) &&
+                std::filesystem::exists(ts_src)) {
+                // Wait for the ring writer to close the trailer, then remux to
+                // MP4 (Annex-B TS -> MP4, stream copy, no re-encode).
+                for (int i = 0; i < 60 && !bridge_.clip_done(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::string cmd =
+                    "ffmpeg -y -nostdin -hide_banner -loglevel error -i '" +
+                    ts_src + "' -c copy -movflags +faststart '" +
+                    pending_.tmp_path + "' >> /tmp/clip_remux.log 2>&1";
+                int crc = std::system(cmd.c_str());
+                std::error_code ecc;
+                std::filesystem::remove(ts_src, ecc);
+                if (crc != 0)
+                    log_warn(cfg_.task_id + " clip remux failed rc=" +
+                             std::to_string(crc));
+            }
         }
         if (std::filesystem::exists(pending_.tmp_path) &&
             std::filesystem::file_size(pending_.tmp_path) > 1024) {

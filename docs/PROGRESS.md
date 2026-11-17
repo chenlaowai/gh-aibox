@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 77
+iteration: 78
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,25 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 78 — 2026-11-17 — 告警视频：bridge ES 包环实现并跑通“取包”段；remux 仍失败
+
+- **新增** `IngestBridge` 的 **ES 包环 + 告警剪辑**（约 150 行）：
+  - 每个编码视频包按到达时间入环（保留 `pre+4s`），`start_clip(pre,post)` 打开 mpegts 输出、
+    先回放环里 `pre` 秒的包，再持续写入直到 `post` 秒后关闭；
+  - 完全不依赖 URL、也不依赖“墙钟↔PTS”映射（这正是生产 `dump4` 的做法）；
+  - `Task::save_alarm` 优先走它；`finalize_video` 在发现 `*.ts` 时用 `ffmpeg -c copy` 转 MP4。
+- **实测**：告警触发后日志为
+  `bridge clip started pre=5 post=5` → `alarm video rc=0 bridge=1 ring=0 multi=0`，
+  说明**剪辑段已经跑通**；但随后 `clip remux failed rc=256`（ffmpeg 转换失败），MP4 未产出。
+  已把 ffmpeg stderr 重定向到 `/tmp/clip_remux.log`，下一轮据此定位（怀疑：TS 里只有视频流且
+  缺少 SPS/PPS 重复、或转换时文件尚未写完）。
+- **运行期开关**：`/tmp/aidetect_no_direct` 可让全部通道走 bridge（告警环可用），
+  但实测 36 路全走 bridge 会把 VPU 会话耗尽（1 ok/35 connecting），**必须重启盒子**才恢复，
+  所以目前仍是“相机直连 + ISC/文件走 bridge”的混合形态。
+- **部署踩坑**：热切换用 `kill` 杀 app 会留下**僵尸进程**，`docker restart` 随之挂死（只能重启盒子）。
+  下一轮改为 `kill -TERM` 优雅退出，或在容器里加一个能正确 `wait` 的 supervisor（如 `tini`）。
+- **状态**：重启后 36 路 **34 ok / 2 connecting**，ffmpeg=0，RSS ~985MB。
 
 ### 迭代 77 — 2026-11-17 — 告警视频两条路都被证伪：dump rc=5、packet ring clip timeout
 
