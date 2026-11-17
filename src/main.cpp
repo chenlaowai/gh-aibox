@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <execinfo.h>
 #include <unistd.h>
+#include <malloc.h>
 
 static void crash_handler(int sig) {
     void* frames[48];
@@ -141,9 +142,16 @@ int main(int argc, char** argv) {
                 }
             }
             static int sample = 0;
-            if (++sample % 20 == 0)
+            ++sample;
+            if (sample % 20 == 0) {
+                // Return free heap pages to the OS: long runs showed ~1 MB/min
+                // RSS growth with dmabuf flat, i.e. allocator fragmentation
+                // rather than a hard leak.  malloc_trim keeps RSS bounded.
+                const char* trim_env = std::getenv("AIDETECT_MALLOC_TRIM");
+                if (!trim_env || std::atoi(trim_env) != 0) malloc_trim(0);
                 log_info("resource: dmabuf=" + std::to_string(dmabuf) +
                          " rss_mb=" + std::to_string(rss_mb));
+            }
             const bool over_dmabuf = max_dmabuf > 0 && dmabuf > max_dmabuf;
             const bool over_rss = max_rss_mb > 0 && rss_mb > max_rss_mb;
             if (over_dmabuf || over_rss) {
