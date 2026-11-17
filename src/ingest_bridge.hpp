@@ -61,6 +61,9 @@ public:
     void stop() {
         running_ = false;
         if (thread_.joinable()) thread_.join();
+        std::lock_guard<std::mutex> lk(clip_mu_);
+        if (clip_fd_ >= 0) { ::close(clip_fd_); clip_fd_ = -1; }
+        clip_active_ = false;
     }
 
     bool running() const { return running_.load(); }
@@ -77,15 +80,13 @@ public:
         clip_path_ = path;
         clip_request_ms_ = now_wall_ms();
         clip_done_ = false;
-        clip_file_.open(path, std::ios::binary | std::ios::trunc);
-        if (!clip_file_.is_open()) return false;
+        clip_fd_ = ::open(path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0644);
+        if (clip_fd_ < 0) return false;
         const int64_t from_ms = clip_request_ms_ - clip_pre_s_ * 1000LL;
         for (auto& c : ts_ring_) {
             if (c.arrival_ms >= from_ms)
-                clip_file_.write(reinterpret_cast<const char*>(c.data.data()),
-                                 static_cast<std::streamsize>(c.data.size()));
+                ::write(clip_fd_, c.data.data(), c.data.size());
         }
-        clip_file_.flush();
         clip_active_ = true;
         return true;
     }
@@ -333,7 +334,7 @@ private:
     };
     std::deque<TsChunk> ts_ring_;
     std::mutex clip_mu_;
-    std::ofstream clip_file_;
+    int clip_fd_ = -1;  // raw fd: safe to write from the ingest thread
     int clip_pre_s_ = 5;
     int clip_post_s_ = 5;
     int64_t clip_request_ms_ = 0;
@@ -355,10 +356,9 @@ private:
         while (!ts_ring_.empty() && now - ts_ring_.front().arrival_ms > keep_ms)
             ts_ring_.pop_front();
         if (!clip_active_.load()) return;
-        if (!clip_file_.is_open()) return;
-        clip_file_.write(reinterpret_cast<const char*>(data), size);
+        if (clip_fd_ >= 0) ::write(clip_fd_, data, static_cast<size_t>(size));
         if (now > clip_request_ms_ + clip_post_s_ * 1000LL) {
-            clip_file_.close();
+            if (clip_fd_ >= 0) { ::close(clip_fd_); clip_fd_ = -1; }
             clip_active_ = false;
             clip_done_ = true;
         }
