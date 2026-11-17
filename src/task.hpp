@@ -4586,10 +4586,16 @@ private:
                     pending_.tmp_path + "' >> /tmp/clip_remux.log 2>&1";
                 int crc = std::system(cmd.c_str());
                 std::error_code ecc;
-                std::filesystem::remove(ts_src, ecc);
-                if (crc != 0)
+                if (crc != 0) {
+                    // Keep the TS for diagnosis instead of deleting evidence.
+                    std::error_code kecc;
+                    std::filesystem::rename(ts_src, ts_src + ".keep", kecc);
                     log_warn(cfg_.task_id + " clip remux failed rc=" +
-                             std::to_string(crc));
+                             std::to_string(crc) + " ts_kept=" + ts_src + ".keep");
+                } else {
+                    std::error_code kecc;
+                    std::filesystem::remove(ts_src, kecc);
+                }
             }
         }
         if (std::filesystem::exists(pending_.tmp_path) &&

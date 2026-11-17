@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 78
+iteration: 79
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,22 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 79 — 2026-11-17 — 告警剪辑尝试“原始 TS 字节环”导致进程崩溃，已回退；容器改直启
+
+- **尝试**：把剪辑从“AVPacket 环 + 独立 muxer”（写出的 TS 为 0 字节，mpegts 头写失败）改为
+  **原始 TS 字节环**：`write_cb` 里把发给解码器的同一份 TS 字节按到达时间留存，告警时 `pre` 秒
+  从环回放、再持续写 `post` 秒到 `.ts`，再 `ffmpeg -c copy` 转 MP4。理论上与解码器收到的流逐字节一致，
+  必然可解析。
+- **结果：进程崩溃**（`clip9` 运行约 1 分钟后变成 defunct），怀疑点：`std::ofstream` 在 ingest 线程
+  与任务线程之间跨线程写入/析构（`clip_file_` 在锁内但生命周期跨线程），或每 36 路持续留存的 TS 字节
+  环导致内存压力。**已回退到稳定版 `aidetect_clip4`**。
+- **下一轮方案（更安全）**：字节只入环（每路约 pre+4s），**告警时由任务线程**把「环内 pre 段 + 之后
+  新收到的 post 段」一次性写文件——不在 ingest 线程做任何文件 IO，也不跨线程持有 ofstream。
+- **容器启动方式改为直启**：`--entrypoint /opt/bin/aidetect`（不再用 sh 监督循环，避免子进程变僵尸后
+  循环卡死）；`--restart unless-stopped` 会在进程退出后自动拉起。部署流程简化为：
+  `cp 新二进制 → /data/CT/project/ai/bin/aidetect`，然后 `docker restart aidetect`（或 kill PID1）。
+- **状态**：36 路 **32 ok / 4 connecting**，ffmpeg=0，RSS 838MB，dmabuf 537，`RestartCount=0`。
 
 ### 迭代 78 — 2026-11-17 — 告警视频：bridge ES 包环实现并跑通“取包”段；remux 仍失败
 

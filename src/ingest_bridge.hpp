@@ -71,13 +71,21 @@ public:
     // no dependence on wall-clock <-> PTS mapping.
     bool start_clip(const std::string& path, int pre_s, int post_s) {
         std::lock_guard<std::mutex> lk(clip_mu_);
-        if (clip_active_) return false;
+        if (clip_active_.load()) return false;
         clip_pre_s_ = std::max(1, pre_s);
-        clip_path_ = path;
         clip_post_s_ = std::max(1, post_s);
+        clip_path_ = path;
         clip_request_ms_ = now_wall_ms();
         clip_done_ = false;
-        clip_started_ = false;
+        clip_file_.open(path, std::ios::binary | std::ios::trunc);
+        if (!clip_file_.is_open()) return false;
+        const int64_t from_ms = clip_request_ms_ - clip_pre_s_ * 1000LL;
+        for (auto& c : ts_ring_) {
+            if (c.arrival_ms >= from_ms)
+                clip_file_.write(reinterpret_cast<const char*>(c.data.data()),
+                                 static_cast<std::streamsize>(c.data.size()));
+        }
+        clip_file_.flush();
         clip_active_ = true;
         return true;
     }
@@ -100,9 +108,7 @@ private:
     static int write_cb(void* opaque, uint8_t* buf, int size) {
         // The mpegts muxer hands us whatever it buffered (up to 64 KB).  UDP
         // datagrams above the MTU are fragmented and the decoder reads with
-        // pkt_size=1316, so it sees truncated TS packets and never produces a
-        // frame.  Slice every write into MTU-safe datagrams, like ffmpeg's
-        // udp protocol does.
+        // pkt_size=1316, so slice every write into MTU-safe datagrams.
         constexpr int kChunk = 1316;
         auto* self = static_cast<IngestBridge*>(opaque);
         for (int off = 0; off < size; off += kChunk) {
@@ -111,6 +117,10 @@ private:
                 ::send(self->sock_dec_, buf + off, n, MSG_NOSIGNAL);
             if (self->sock_rec_ >= 0)
                 ::send(self->sock_rec_, buf + off, n, MSG_NOSIGNAL);
+            // The alarm clip is a byte-for-byte copy of the same TS stream the
+            // decoder sees, so it is always parseable (no second muxer, no
+            // extradata/PTS remapping).
+            self->on_ts_bytes(buf + off, n);
         }
         return size;
     }
@@ -290,17 +300,6 @@ private:
                     // A short write only means the UDP receiver dropped a
                     // datagram; keep going, the decoder tolerates gaps.
                 }
-                {
-                    std::lock_guard<std::mutex> lk(clip_mu_);
-                    if (clip_active_.load()) {
-                        if (!clip_started_) clip_open(vin);
-                        if (clip_out_) clip_write(pkt);
-                        if (clip_started_ &&
-                            now_wall_ms() > clip_request_ms_ + clip_post_s_ * 1000LL)
-                            clip_close();
-                    }
-                    ring_push(pkt);
-                }
                 av_packet_unref(pkt);
                 // MP4 playback must not outrun real time (ffmpeg's -re).
                 if (loop_file_) {
@@ -327,15 +326,14 @@ private:
         if (rec >= 0) ::close(rec);
     }
 
-    struct RingPkt {
-        AVPacket* pkt = nullptr;
+    // Raw TS byte ring (pre-alarm) and the current clip file.
+    struct TsChunk {
+        std::vector<uint8_t> data;
         int64_t arrival_ms = 0;
     };
-    std::deque<RingPkt> ring_;
+    std::deque<TsChunk> ts_ring_;
     std::mutex clip_mu_;
-    AVFormatContext* clip_out_ = nullptr;
-    AVStream* clip_stream_ = nullptr;
-    bool clip_started_ = false;
+    std::ofstream clip_file_;
     int clip_pre_s_ = 5;
     int clip_post_s_ = 5;
     int64_t clip_request_ms_ = 0;
@@ -347,73 +345,25 @@ private:
                    std::chrono::system_clock::now().time_since_epoch())
             .count();
     }
-    // Called from the ingest thread for every encoded video packet.
-    void ring_push(const AVPacket* pkt) {
-        auto* dup = av_packet_clone(pkt);
-        if (!dup) return;
-        ring_.push_back({dup, now_wall_ms()});
-        const int64_t keep_ms = (clip_pre_s_ + 4) * 1000LL;
+    // Ingest thread: keep the last seconds of TS bytes and append them to the
+    // clip file while a clip is being written.
+    void on_ts_bytes(const uint8_t* data, int size) {
+        std::lock_guard<std::mutex> lk(clip_mu_);
         const int64_t now = now_wall_ms();
-        while (!ring_.empty() && now - ring_.front().arrival_ms > keep_ms) {
-            av_packet_free(&ring_.front().pkt);
-            ring_.pop_front();
+        ts_ring_.push_back({std::vector<uint8_t>(data, data + size), now});
+        const int64_t keep_ms = (clip_pre_s_ + 4) * 1000LL;
+        while (!ts_ring_.empty() && now - ts_ring_.front().arrival_ms > keep_ms)
+            ts_ring_.pop_front();
+        if (!clip_active_.load()) return;
+        if (!clip_file_.is_open()) return;
+        clip_file_.write(reinterpret_cast<const char*>(data), size);
+        if (now > clip_request_ms_ + clip_post_s_ * 1000LL) {
+            clip_file_.close();
+            clip_active_ = false;
+            clip_done_ = true;
         }
     }
-    void clip_write(const AVPacket* pkt) {
-        if (!clip_out_ || !clip_stream_) return;
-        AVPacket* copy = av_packet_clone(pkt);
-        if (!copy) return;
-        copy->stream_index = 0;
-        copy->pos = -1;
-        av_interleaved_write_frame(clip_out_, copy);
-        av_packet_free(&copy);
-    }
-    // Opens the clip muxer and flushes the pre-alarm window from the ring.
-    void clip_open(AVStream* vin) {
-        if (avformat_alloc_output_context2(&clip_out_, nullptr, "mpegts",
-                                           clip_path_.c_str()) < 0 || !clip_out_) {
-            clip_out_ = nullptr;
-            clip_active_ = false;
-            return;
-        }
-        clip_stream_ = avformat_new_stream(clip_out_, nullptr);
-        if (!clip_stream_ ||
-            avcodec_parameters_copy(clip_stream_->codecpar, vin->codecpar) < 0) {
-            avformat_free_context(clip_out_);
-            clip_out_ = nullptr;
-            clip_active_ = false;
-            return;
-        }
-        clip_stream_->codecpar->codec_tag = 0;
-        clip_stream_->time_base = vin->time_base;
-        if (avio_open(&clip_out_->pb, clip_path_.c_str(), AVIO_FLAG_WRITE) < 0) {
-            avformat_free_context(clip_out_);
-            clip_out_ = nullptr;
-            clip_active_ = false;
-            return;
-        }
-        if (avformat_write_header(clip_out_, nullptr) < 0) {
-            avio_closep(&clip_out_->pb);
-            avformat_free_context(clip_out_);
-            clip_out_ = nullptr;
-            clip_active_ = false;
-            return;
-        }
-        clip_started_ = true;
-        const int64_t from_ms = clip_request_ms_ - clip_pre_s_ * 1000LL;
-        for (auto& rp : ring_)
-            if (rp.arrival_ms >= from_ms) clip_write(rp.pkt);
-    }
-    void clip_close() {
-        if (!clip_out_) return;
-        av_write_trailer(clip_out_);
-        if (clip_out_->pb) avio_closep(&clip_out_->pb);
-        avformat_free_context(clip_out_);
-        clip_out_ = nullptr;
-        clip_stream_ = nullptr;
-        clip_active_ = false;
-        clip_done_ = true;
-    }
+
     std::string url_;
     int dec_port_ = 0;
     int rec_port_ = 0;
