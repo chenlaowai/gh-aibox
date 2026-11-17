@@ -4753,6 +4753,9 @@ private:
     bool inproc_ingest_enabled() const {
         static const bool on = [] {
             const char* v = std::getenv("AIDETECT_INPROC_INGEST");
+            // Runtime switch for A/B profiling: /tmp/aidetect_no_inproc falls
+            // back to the external ffmpeg gateway without a restart.
+            if (std::ifstream("/tmp/aidetect_no_inproc").good()) return false;
             return !v || std::string(v) != "0";
         }();
         return on;
