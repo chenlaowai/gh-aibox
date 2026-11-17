@@ -249,6 +249,8 @@ private:
                 goto done;
             }
             int64_t last_pkt_us = av_gettime_relative();
+            int64_t pace_start_us_ = 0;
+            int64_t pace_start_pts_ = AV_NOPTS_VALUE;
             int64_t ts_off = 0;
             int64_t last_pts = AV_NOPTS_VALUE;
             while (running_) {
@@ -304,8 +306,22 @@ private:
                     // datagram; keep going, the decoder tolerates gaps.
                 }
                 av_packet_unref(pkt);
-                // MP4 playback must not outrun real time (ffmpeg's -re).
+                // File sources must be paced like `ffmpeg -re`: without this
+                // a 25 fps MP4 is decoded as fast as the disk allows, which
+                // burned ~5 CPU cores across the 14 test channels.
                 if (loop_file_) {
+                    if (pace_start_us_ == 0) {
+                        pace_start_us_ = av_gettime_relative();
+                        pace_start_pts_ = last_pts;
+                    } else if (last_pts != AV_NOPTS_VALUE &&
+                               pace_start_pts_ != AV_NOPTS_VALUE) {
+                        const double tb = av_q2d(vout->time_base);
+                        const int64_t due = pace_start_us_ +
+                            static_cast<int64_t>((last_pts - pace_start_pts_) * tb * 1e6);
+                        const int64_t now_us = av_gettime_relative();
+                        if (due > now_us + 1000)
+                            av_usleep(static_cast<unsigned>(due - now_us));
+                    }
                     last_pkt_us = av_gettime_relative();
                 }
             }

@@ -344,6 +344,36 @@ public:
         status_thread_ = std::thread([this] {
             int last_heartbeat_s = -1;
             while (!stop_) {
+            // Auto substream: while nobody watches this single channel, ISC
+            // tasks decode the substream (streamType=1) instead of the 4K main
+            // stream.  Opening the channel in the Web UI switches back to main.
+            // Enabled by /tmp/aidetect_auto_substream (runtime, no restart).
+            if (cfg_.channel_address.rfind("isc://", 0) == 0 &&
+                std::ifstream("/tmp/aidetect_auto_substream").good()) {
+                const bool watching = want_single_ && want_single_();
+                const int want = watching ? 0 : 1;
+                if (want != isc_stream_pref_.load()) {
+                    isc_stream_pref_ = want;
+                    log_info(cfg_.task_id + " switch ISC streamType=" +
+                             std::to_string(want) +
+                             (watching ? " (viewer)" : " (idle, save cpu)"));
+                    stop_gateway();
+                }
+            }
+            if (cfg_.channel_address.rfind("rtsp://", 0) == 0 &&
+                std::ifstream("/tmp/aidetect_auto_substream").good()) {
+                const std::string sub = substream_url(cfg_.channel_address);
+                if (!sub.empty()) {
+                    const bool watching = want_single_ && want_single_();
+                    const int want = watching ? 0 : 1;
+                    if (want != direct_stream_pref_.load()) {
+                        direct_stream_pref_ = want;
+                        reconnect_requested_ = true;
+                        log_info(cfg_.task_id + " switch camera stream=" +
+                                 (watching ? std::string("main") : std::string("sub")));
+                    }
+                }
+            }
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 int64_t now = now_ms();
                 // A stalled/never-connected channel must keep producing a
@@ -609,6 +639,26 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(2000));
         }
     }
+    // Derive the substream URL for the common IP-camera layouts so idle
+    // channels can decode a ~10x smaller stream.
+    static std::string substream_url(const std::string& s) {
+        std::string u = s;
+        auto repl = [&](const std::string& from, const std::string& to) {
+            auto p = u.find(from);
+            if (p == std::string::npos) return false;
+            u.replace(p, from.size(), to);
+            return true;
+        };
+        if (repl("/h264/ch1/main/av_stream", "/h264/ch1/sub/av_stream")) return u;
+        if (repl("/Streaming/Channels/101", "/Streaming/Channels/102")) return u;
+        if (repl("subtype=0", "subtype=1")) return u;
+        if (repl("streamType=0", "streamType=1")) return u;
+        return {};
+    }
+    // Reconnect request used by direct-decode tasks when the stream preference
+    // changes (main <-> sub).
+    std::atomic<bool> reconnect_requested_{false};
+    std::atomic<int> direct_stream_pref_{-1};
     static bool is_stream_source(const std::string& s) {
         return s.rfind("rtsp://", 0) == 0 || s.rfind("udp://", 0) == 0 ||
                s.rfind("rtmp://", 0) == 0 || s.rfind("http://", 0) == 0 ||
@@ -771,6 +821,12 @@ private:
             sail::Handle handle(0);
             sail::Bmcv bmcv(handle);
             std::string source = cfg_.channel_address;
+            // Idle cameras decode their substream to save CPU; opening the
+            // channel in the Web UI switches back to the main stream.
+            if (direct_stream_pref_.load() == 1) {
+                const std::string sub = substream_url(source);
+                if (!sub.empty()) source = sub;
+            }
             const bool isc_source = source.rfind("isc://", 0) == 0;
             if (!isc_source && !is_stream_source(source) &&
                 !std::filesystem::exists(source)) {
@@ -947,6 +1003,13 @@ private:
                 }
                 fail_count = 0;
                 process_frame(frame, handle, bmcv, frame_id);
+                if (reconnect_requested_.exchange(false)) {
+                    // Stream preference changed: drop the decoder so the outer
+                    // loop reopens with the new URL (main <-> sub).
+                    if (decoder_holder) decoder_holder.reset();
+                    decoder_ = nullptr;
+                    break;
+                }
             }
             if (pending_.active) {
                 int64_t wait_ms = pending_.ready_ms + 1500 - now_ms();
@@ -4218,6 +4281,10 @@ private:
 
     bool start_isc_gateway() {
         int base_st = IscResolver::stream_type_of(cfg_.channel_address);
+        // Someone watching the single channel -> main stream; otherwise the
+        // substream, which is ~10x cheaper to decode on this box.
+        const int pref = isc_stream_pref_.load();
+        if (pref >= 0) base_st = pref;
         // Production MediaUrl uses protocol=rtmp&transcode=1. Prefer the
         // channel's protocol; the old environment override forced rtsp first
         // and hit the ISC 500/session limit on many cameras.
@@ -4652,6 +4719,9 @@ private:
     DecodePool& decode_pool_;
     bool use_multi_ = false;
     int open_fail_count_ = 0;
+    // ISC stream preference: -1 = as configured, 0 = main, 1 = sub.  Used to
+    // cut decode cost while nobody watches the channel (see want_single_).
+    std::atomic<int> isc_stream_pref_{-1};
     SinglePreviewCallback single_cb_;
     PreviewCallback tile_cb_;
     DemandCallback want_single_;
