@@ -3396,6 +3396,9 @@ private:
     void maybe_preview(sail::BMImage& frame, sail::Handle& handle,
                        sail::Bmcv& bmcv, int64_t now) {
         if (no_preview_) return;
+        // Runtime switch for CPU profiling: /tmp/aidetect_no_preview disables
+        // the preview/merge rendering path without restarting the service.
+        if (std::ifstream("/tmp/aidetect_no_preview").good()) return;
         bool want_single = want_single_ ? want_single_() : true;
         bool want_tile = want_tile_ ? want_tile_() : false;
         bool forced_area = force_area_.exchange(false);
