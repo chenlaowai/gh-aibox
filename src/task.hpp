@@ -788,7 +788,13 @@ private:
                     // ISC keeps the gateway: 36 direct sail::Decoder objects exhaust the
                     // VPU on this box (verified: whole box stalls, reboot
                     // needed).  Non-ISC sources decode in-process.
-                    if (direct_decode_enabled() && !isc_source) {
+                    const bool local_file = !is_stream_source(cfg_.channel_address);
+                    // Files have no live pacing: sail::Decoder on a file
+                    // returns EOF after one pass, the task then reconnects
+                    // every few seconds (that reconnect storm was the RSS
+                    // leak driver).  Files and ISC go through the ingest
+                    // bridge, which paces and loops them with monotonic TS.
+                    if (direct_decode_enabled() && !isc_source && !local_file) {
                         source_url_ = direct_decode_url();
                         gateway_ok = !source_url_.empty();
                     } else {
@@ -894,7 +900,13 @@ private:
                         // ISC keeps the gateway: 36 direct sail::Decoder objects exhaust the
                     // VPU on this box (verified: whole box stalls, reboot
                     // needed).  Non-ISC sources decode in-process.
-                    if (direct_decode_enabled() && !isc_source) {
+                    const bool local_file = !is_stream_source(cfg_.channel_address);
+                    // Files have no live pacing: sail::Decoder on a file
+                    // returns EOF after one pass, the task then reconnects
+                    // every few seconds (that reconnect storm was the RSS
+                    // leak driver).  Files and ISC go through the ingest
+                    // bridge, which paces and loops them with monotonic TS.
+                    if (direct_decode_enabled() && !isc_source && !local_file) {
                             source_url_ = direct_decode_url();
                             gateway_ok = !source_url_.empty();
                         } else {

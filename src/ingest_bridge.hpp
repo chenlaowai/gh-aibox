@@ -213,6 +213,8 @@ private:
                 goto done;
             }
             int64_t last_pkt_us = av_gettime_relative();
+            int64_t ts_off = 0;
+            int64_t last_pts = AV_NOPTS_VALUE;
             while (running_) {
                 ret = av_read_frame(in, pkt);
                 if (ret < 0) {
@@ -251,6 +253,19 @@ private:
                     }
                 }
                 av_packet_rescale_ts(pkt, vin->time_base, vout->time_base);
+                // A looped MP4 restarts at pts 0.  Keep the output timeline
+                // monotonic instead of jumping backwards, otherwise the
+                // decoder treats every loop as a discontinuity and the task
+                // reconnects (that reconnect storm was the RSS leak driver).
+                if (pkt->pts != AV_NOPTS_VALUE) {
+                    if (last_pts != AV_NOPTS_VALUE &&
+                        pkt->pts + ts_off < last_pts) {
+                        ts_off = last_pts - pkt->pts + 3600;
+                    }
+                    pkt->pts += ts_off;
+                    if (pkt->dts != AV_NOPTS_VALUE) pkt->dts += ts_off;
+                    last_pts = pkt->pts;
+                }
                 pkt->stream_index = 0;
                 pkt->pos = -1;
                 if (av_interleaved_write_frame(out, pkt) < 0) {
