@@ -718,8 +718,8 @@ private:
                     group_, slot_, std::max(12, cfg_.video_duration + 2));
             }
                         int frame_id = 0;
+            sail::BMImage frame;  // reused: one allocation per task, not per frame
             while (!stop_) {
-                sail::BMImage frame;
                 int ret = decode_pool_.read(group_, slot_, frame);
                 finalize_video(false);
                 if (ret != 0) {
@@ -880,8 +880,8 @@ private:
                 decoder_->enable_dump(std::max(12, cfg_.video_duration + 2));
                         int frame_id = 0;
             int fail_count = 0;
+            sail::BMImage frame;  // reused: one allocation per task, not per frame
             while (!stop_) {
-                sail::BMImage frame;
                 int ret = decoder_->read(handle, frame);
                 finalize_video(false);
                 if (ret != 0) {
