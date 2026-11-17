@@ -807,7 +807,7 @@ private:
                         std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                         continue;
                     }
-                    if (!direct_decode_enabled()) start_recorder();
+                    start_recorder();
                 }
                 try {
                     std::lock_guard<std::mutex> hw(decode_hw_mutex());
@@ -918,7 +918,7 @@ private:
                             std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                             continue;
                         }
-                        if (!direct_decode_enabled()) restart_recorder();
+                        restart_recorder();
                         try {
                             std::lock_guard<std::mutex> hw(decode_hw_mutex());
                             decoder_holder = std::make_unique<sail::Decoder>(source_url_, true, 0);
@@ -4001,9 +4001,9 @@ private:
         // paints a torn/colorful bottom strip.  Keep a larger receive buffer
         // and tolerate overruns instead of losing packets.
         std::string dec = "udp://127.0.0.1:" + std::to_string(p_dec) +
-                          "?pkt_size=1316&buffer_size=8388608&overrun_nonfatal=1";
+                          "?pkt_size=1316&buffer_size=2097152&overrun_nonfatal=1";
         std::string rec = "udp://127.0.0.1:" + std::to_string(p_rec) +
-                          "?pkt_size=1316&buffer_size=8388608&overrun_nonfatal=1";
+                          "?pkt_size=1316&buffer_size=2097152&overrun_nonfatal=1";
         std::string dir = app_.tmp_root + "/" + cfg_.task_id;
         ensure_dir(dir);
         std::string pid_file = dir + "/gateway.pid";

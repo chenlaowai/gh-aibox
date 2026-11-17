@@ -95,7 +95,7 @@ private:
     static int udp_socket(int port) {
         int s = ::socket(AF_INET, SOCK_DGRAM, 0);
         if (s < 0) return -1;
-        int sndbuf = 8 * 1024 * 1024;
+        int sndbuf = 2 * 1024 * 1024;
         ::setsockopt(s, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
