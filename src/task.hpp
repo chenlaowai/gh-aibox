@@ -3731,6 +3731,12 @@ private:
             const int ch = std::min(frame.height(), th * tk);
             const int cx = (frame.width() - cw) / 2;
             const int cy = (frame.height() - ch) / 2;
+            // Non-integer ratios (e.g. 4096x2160 -> 640x360, x6.4) are broken
+            // on this SDK for every device-side scaler we tried, so use the CPU
+            // renderer for them (few 4K sources, ~5-10 ms per tile).
+            if (frame.width() % std::max(1, tw) != 0 ||
+                frame.height() % std::max(1, th) != 0)
+                return render_jpeg(frame, bmcv, tw, th, dets);
             bool tile_ok = false;
             try {
                 tile_ok = bmcv.crop_and_resize(frame, tile_img_, cx, cy, cw, ch,
@@ -4094,9 +4100,9 @@ private:
         // paints a torn/colorful bottom strip.  Keep a larger receive buffer
         // and tolerate overruns instead of losing packets.
         std::string dec = "udp://127.0.0.1:" + std::to_string(p_dec) +
-                          "?pkt_size=1316&buffer_size=2097152&overrun_nonfatal=1";
+                          "?pkt_size=1316&buffer_size=4194304&overrun_nonfatal=1";
         std::string rec = "udp://127.0.0.1:" + std::to_string(p_rec) +
-                          "?pkt_size=1316&buffer_size=2097152&overrun_nonfatal=1";
+                          "?pkt_size=1316&buffer_size=4194304&overrun_nonfatal=1";
         std::string dir = app_.tmp_root + "/" + cfg_.task_id;
         ensure_dir(dir);
         std::string pid_file = dir + "/gateway.pid";
