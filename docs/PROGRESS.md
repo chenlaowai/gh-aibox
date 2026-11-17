@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 82
+iteration: 83
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,24 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 83 — 2026-11-17 — 告警视频打通（分段环 → MP4 实测有效）
+
+- **修复**：`TsSegmentRecorder::clip()` 用 `ifstream::gcount()` 统计字节不可靠（`rdbuf()` 拷贝后为 0），
+  改为按 `std::filesystem::file_size` 统计；`start()` 时把磁盘上已有 `seg_*.ts` 回填索引；
+  同时删掉会写空 TS 的旧 bridge 剪辑分支（之前 rc=0 但文件 0 字节的元凶）。
+- **实测（真实告警）**：
+  - `22:05:54 segment clip started bytes=890744 segs=6` → `alarm video rc=0`；
+  - `22:15:43 segment clip started bytes=925900 segs=6` → `alarm video rc=0`；
+  - 产出 `.../people_gather/video/20261117_221543.mp4`（657 KB），`ffmpeg` 校验：
+    **Duration 5.22s / H.264 Main / 1280×720 / 24.93fps**，并能正常解出一帧。
+- **与生产的一致性**：生产 `dump4` 是“每通道常驻、从解包流按时间窗口切片”；我们实现为
+  “bridge 把同一份 TS 扇出到告警端口 → 独立线程按 4 秒落盘 → 告警按到达时间拼接 → remux MP4”，
+  语义一致（都不依赖 URL 重开、不依赖墙钟↔PTS 映射），差别只是我们落盘而非纯内存。
+- **部署方式定稿**：`cp 新二进制到 /data/CT/project/ai/bin/` + `kill -9 $(pgrep -x aidetect)`，
+  由容器 `--restart unless-stopped` 自动拉起——**不再用 `docker restart`**（它会间歇挂死）。
+- **状态**：36 任务中运行 25~26（10 个后端 404），其中 **20~21 ok / 4 connecting / 1 stalled**、
+  ffmpeg=0、RSS 556MB、dmabuf 349。
 
 ### 迭代 82 — 2026-11-17 — 查清 26/36 任务：后端配置 404；告警分段剪辑差最后一处字节计数
 
