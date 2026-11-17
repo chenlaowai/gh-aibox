@@ -311,6 +311,27 @@ private:
                     // A short write only means the UDP receiver dropped a
                     // datagram; keep going, the decoder tolerates gaps.
                 }
+                // Live sources arrive in bursts (keyframes).  Sending them at
+                // full speed overflowed the decoder socket and produced torn
+                // frames; pace at ~1.3x the stream bitrate instead.
+                if (!loop_file_) {
+                    if (shape_bps_ <= 0 && vin->codecpar->bit_rate > 0)
+                        shape_bps_ = vin->codecpar->bit_rate * 1.3;
+                    if (shape_bps_ > 0) {
+                        if (shape_start_us_ == 0) shape_start_us_ = av_gettime_relative();
+                        shape_bytes_ += pkt->size;
+                        const int64_t due = shape_start_us_ +
+                            static_cast<int64_t>(shape_bytes_ * 8.0 * 1e6 / shape_bps_);
+                        const int64_t now_us = av_gettime_relative();
+                        int64_t wait_us = due - now_us;
+                        if (wait_us > 200000) wait_us = 200000;
+                        while (wait_us > 0 && running_) {
+                            const int64_t step = std::min<int64_t>(wait_us, 50000);
+                            av_usleep(static_cast<unsigned>(step));
+                            wait_us -= step;
+                        }
+                    }
+                }
                 av_packet_unref(pkt);
                 // File sources must be paced like `ffmpeg -re`: without this
                 // a 25 fps MP4 is decoded as fast as the disk allows, which
@@ -367,6 +388,10 @@ private:
     std::deque<TsChunk> ts_ring_;  // kept empty: clips now come from disk segments
     std::mutex clip_mu_;
     int clip_fd_ = -1;  // raw fd: safe to write from the ingest thread
+    // Byte-rate shaper for live sources (0 = disabled until the bitrate is known).
+    int64_t shape_bps_ = 0;
+    int64_t shape_start_us_ = 0;
+    int64_t shape_bytes_ = 0;
     int clip_pre_s_ = 5;
     int clip_post_s_ = 5;
     int64_t clip_request_ms_ = 0;
