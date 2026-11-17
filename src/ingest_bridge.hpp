@@ -219,20 +219,15 @@ private:
                 ret = av_read_frame(in, pkt);
                 if (ret < 0) {
                     if (loop_file_ && ret == AVERROR_EOF) {
-                        // Reopen instead of seek(): the MP4 sources restart at pts 0 and a
-                        // backwards timestamp makes the mpegts muxer reject the stream.
-                        avformat_close_input(&in);
-                        in = nullptr;
-                        AVDictionary* ropts = nullptr;
-                        av_dict_set(&ropts, "fflags", "nobuffer", 0);
-                        if (avformat_open_input(&in, url_.c_str(), nullptr, &ropts) < 0 ||
-                            avformat_find_stream_info(in, nullptr) < 0) {
-                            av_dict_free(&ropts);
-                            fail("ingest reopen failed");
+                        // Seek back for a seamless loop.  Reopening the input left a
+                        // 100~300ms hole in the TS every loop; the decoder then reported a
+                        // read timeout and the tile flashed "正在重连...".  The monotonic
+                        // timestamp offset below turns the pts restart into a forward jump.
+                        if (av_seek_frame(in, -1, 0, AVSEEK_FLAG_BACKWARD) < 0) {
+                            fail("ingest loop seek failed");
                             break;
                         }
-                        av_dict_free(&ropts);
-                        vin = in->streams[vstream];
+                        avformat_flush(in);
                         continue;
                     }
                     fail("ingest read: " + std::string(av_err2str(ret)));

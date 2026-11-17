@@ -4471,6 +4471,11 @@ private:
                 async_dump = (rc == 0);
             }
         }
+        log_info(cfg_.task_id + " alarm video branch=" +
+                 std::string(recorder_ && recorder_->running() ? "ring" :
+                             (use_multi_ ? "pool-dump" : "decoder-dump")) +
+                 " rc=" + std::to_string(rc) + " url=" +
+                 (upstream_url_.empty() ? source_url_ : upstream_url_));
         if (rc != 0) {
             log_warn(cfg_.task_id + " alarm video failed rc=" + std::to_string(rc));
             pending_ = PendingVideo{};
