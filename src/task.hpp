@@ -4358,8 +4358,15 @@ private:
         // Capture the trigger instant before image rendering/label HTTP: the
         // alarm image is this frame, so the video window must be centred here
         // (production's 50% backtracking ratio).
-        const int64_t alarm_wall_ms =
-            current_frame_ms_.load() > 0 ? current_frame_ms_.load() : now_ms();
+    // now_ms() is steady_clock (monotonic); alarm file names and the packet
+    // ring window need wall-clock milliseconds.  Convert the frame instant:
+    // wall_now - (steady_now - frame_steady) = the instant the frame arrived.
+    const int64_t steady_now = now_ms();
+    const int64_t frame_steady =
+        current_frame_ms_.load() > 0 ? current_frame_ms_.load() : steady_now;
+    const int64_t wall_now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const int64_t alarm_wall_ms = wall_now_ms - (steady_now - frame_steady);
         std::string model_name = rt.spec->name;
         std::string stamp = stamp_at_ms(alarm_wall_ms);
         std::string img_dir = app_.data_root + "/" + cfg_.task_id + "/" + model_name + "/img";

@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 74
+iteration: 75
 updated: 2026-11-13
 commit: -
 -->
@@ -9,6 +9,21 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 75 — 2026-11-17 — 告警时间戳修复（steady→wall）+ 告警视频链路梳理
+
+- **发现**：`now_ms()` 是 `steady_clock`（开机单调时间），但告警文件命名与告警视频窗口直接拿它当**墙钟**用，
+  导致告警图片/视频文件名出现 `19700101_080953.jpg`（1970 年）——生产是墙钟毫秒。
+- **修复**：`save_alarm` 里用 `wall_now - (steady_now - frame_steady)` 反推出**该帧的真实墙钟毫秒**，
+  再用它做 `stamp_at_ms` 命名与 `clip_recorder` 的告警窗口；`now_ms()` 继续用于超时/间隔。
+- **告警视频链路**（与生产对照）：生产 `dump4` 是**每通道常驻**，从解码器的已解包流里取 pre/post，
+  进程内写 MP4；我们对应实现有三条：①`AlarmRingRecorder`（本地 TS 环，`AIDETECT_ALARM_RING=1`）；
+  ②`decoder_->dump()`（sail 进程内，单模式可用）；③`dump_in_worker`/外部服务（兜底，会重开 URL，
+  对 ISC 单次 URL 必然失败）。当前容器用 **②**（`AIDETECT_NO_DUMP` 已去掉、`ALARM_RING=0`）。
+- **待验证**：本轮 11:36 的 `people_gather` 告警没有产出 mp4、也没有 `alarm video failed` 日志，
+  说明该告警走的分支没有进入 dump 段（需继续定位是哪个模型/路径触发）；
+  下一轮计划：给告警视频链路的每个分支加明确日志（模型名 + 分支 + rc），再用一次真实告警验证。
+- **状态**：36 路 **33 ok / 3 connecting**，ffmpeg=0，RSS 974MB，dmabuf 803。
 
 ### 迭代 74 — 2026-11-17 — 重连风暴与 RSS 泄漏、生产对比首轮数据、GitHub 回退到单体前版本
 
