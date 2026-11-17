@@ -3720,6 +3720,9 @@ private:
                 tile_img_w_ = tw;
                 tile_img_h_ = th;
             }
+            // NOTE: vpp_resize with a non-integer divisor (e.g. 4096->640)
+            // produces colour noise on this SDK; the device crop+resize path
+            // returned no frame in testing, so revert to vpp_resize here.
             if (bmcv.vpp_resize(frame, tile_img_, tw, th,
                                 bmcv_resize_algorithm::BMCV_INTER_LINEAR) != 0)
                 return {};
