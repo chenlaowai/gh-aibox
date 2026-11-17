@@ -3720,10 +3720,27 @@ private:
                 tile_img_w_ = tw;
                 tile_img_h_ = th;
             }
-            // NOTE: vpp_resize with a non-integer divisor (e.g. 4096->640)
-            // produces colour noise on this SDK; the device crop+resize path
-            // returned no frame in testing, so revert to vpp_resize here.
-            if (bmcv.vpp_resize(frame, tile_img_, tw, th,
+            // vpp_resize is only pixel-correct for an integer divisor, so crop
+            // the source to an exact k*tile box (centred) and then downscale by
+            // exactly k.  4096x2160 -> crop 3840x2160 -> /6 -> 640x360 is clean,
+            // while 4096 -> 640 (x6.4) produced colour noise.
+            int tk = std::min(frame.width() / std::max(1, tw),
+                              frame.height() / std::max(1, th));
+            if (tk < 1) tk = 1;
+            const int cw = std::min(frame.width(), tw * tk);
+            const int ch = std::min(frame.height(), th * tk);
+            const int cx = (frame.width() - cw) / 2;
+            const int cy = (frame.height() - ch) / 2;
+            bool tile_ok = false;
+            try {
+                tile_ok = bmcv.crop_and_resize(frame, tile_img_, cx, cy, cw, ch,
+                                               tw, th,
+                                               bmcv_resize_algorithm::BMCV_INTER_LINEAR) == 0;
+            } catch (...) {
+                tile_ok = false;
+            }
+            if (!tile_ok &&
+                bmcv.vpp_resize(frame, tile_img_, tw, th,
                                 bmcv_resize_algorithm::BMCV_INTER_LINEAR) != 0)
                 return {};
             sail::BMImage bgr = bmcv.vpp_convert_format(tile_img_, FORMAT_BGR_PACKED);
