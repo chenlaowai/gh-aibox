@@ -265,6 +265,12 @@ private:
                             fail("ingest loop seek failed");
                             break;
                         }
+                        // The loop restarts pts at 0 while our monotonic
+                        // offset keeps growing: rebaseline the pacing clock or
+                        // the computed due time runs away and the ingest thread
+                        // sleeps for minutes (no frames reach the decoder).
+                        pace_start_us_ = 0;
+                        pace_start_pts_ = AV_NOPTS_VALUE;
                         avformat_flush(in);
                         continue;
                     }
@@ -319,8 +325,16 @@ private:
                         const int64_t due = pace_start_us_ +
                             static_cast<int64_t>((last_pts - pace_start_pts_) * tb * 1e6);
                         const int64_t now_us = av_gettime_relative();
-                        if (due > now_us + 1000)
-                            av_usleep(static_cast<unsigned>(due - now_us));
+                        if (due > now_us + 1000) {
+                            // Sleep in slices so stop()/join() is never stuck
+                            // behind a long pacing wait.
+                            int64_t wait_us = due - now_us;
+                            while (wait_us > 0 && running_) {
+                                const int64_t step = std::min<int64_t>(wait_us, 100000);
+                                av_usleep(static_cast<unsigned>(step));
+                                wait_us -= step;
+                            }
+                        }
                     }
                     last_pkt_us = av_gettime_relative();
                 }
