@@ -54,3 +54,23 @@ PTS 节奏控制（之前 14 路 MP4 测试源以磁盘速度解码，白烧 5 �
   3) 每通道推理节奏（按 fps 抽帧，而不是来一帧算一帧）。
 - **dmabuf 数量**属于 sail 实现特性，不必强求与生产一致；但要继续观察是否随时间增长（KI-038）。
 - **告警视频**：链路已切到 `sail::Decoder::dump()`，与生产 dump4 的思路一致；需一次真实告警验证文件生成。
+
+## 5. 路线 B 实测（2026-11-18）：解码栈是 CPU 差距的主因
+
+单路 `数智技术中心_第二排`（2560×1440 H.264，源 15fps），同一台盒子相继跑 200 帧：
+
+| 解码 | 帧率 | CPU/帧 | 折算 36 路（1440p） |
+|---|---|---|---|
+| 软件 `h264`（**现有 sail::Decoder 走的**） | 27.9 fps | 35.59 ms | ≈ **1.28 核/路**，36 路约 6 核 |
+| VPU `h264_bm`（路线 B） | 27.5 fps | 3.25 ms | ≈ 0.12 核/路，36 路约 0.7 核 |
+
+- `sail::Decoder` 的实现是 `avcodec_find_decoder(codecpar->codec_id)`（软件解码，
+  `yuvj420p` 在系统内存）+ `bm_image_copy_host_to_device` + `bmcv_image_vpp_convert`，
+  与生产 `media_sdk` 的「VPU 直接出设备帧」不是一回事——这解释了「解码烧 6 核」。
+- 路线 B 用 `h264_bm`/`hevc_bm`：帧在设备内存（`data[4]/[5]` 为设备地址），
+  直接 `bm_image_attach` 给 bmcv，**没有每帧 mmap、没有主机↔设备拷贝**，
+  这也是 dmabuf 数量能向生产（133）靠拢的关键。
+- 全链路 PoC（硬解＋bmcv 预处理＋bmrt＋画框＋JPEG）单路 13.24 ms CPU/帧、
+  推理 0.13 ms/帧；集成后目标是把单路 CPU 从 7.4% 压到 2% 量级。
+
+详见 `tools/routeb_poc/README.md` 与 `docs/PROGRESS.md` 迭代 98。

@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 97
-updated: 2026-11-13
+iteration: 98
+updated: 2026-11-18
 commit: -
 -->
 
@@ -9,6 +9,45 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 98 — 2026-11-18 — 路线 B PoC 跑通：VPU 硬解 CPU 降 10.9 倍，全链路无 sail
+
+- **交付**：`tools/routeb_poc/`（`decode_probe.cpp`、`poc.cpp`、`README.md`），
+  **不链接 `libsail.so`**，只用 `avcodec h264_bm/hevc_bm` + `bmcv_*` + `bmrt_*`。
+  链路：VPU 硬解 → bmcv 缩放/归一化 → bmrt 推理 → bmcv 画框 → bmcv JPEG。
+- **实测（单路 2560×1440 H.264，源 15fps，盒子空闲时段）**：
+
+  | 路径 | 帧率 | CPU/帧 |
+  |---|---|---|
+  | 现有 sail 用的软件解码 `h264` | 27.9 fps | **35.59 ms** |
+  | VPU 硬解 `h264_bm` | 27.5 fps | **3.25 ms** |
+  | 全链路 PoC（预处理+推理+画框+JPEG） | 14.7 fps | 13.24 ms |
+
+  → **解码 CPU 降 10.9 倍**（36 路 1440p 从约 1.28 核/路降到 0.12 核/路），
+  推理 `bmrt_launch_tensor_ex` **0.13 ms/帧**；120 帧 `fd 6→33`、`dmabuf maps 0`、
+  RSS 8.7→36.3 MB。
+- **佐证**：PoC 用相机 `数智技术中心_第二排` 直连 RTSP，输出
+  `1280×720/322416B` JPEG（画面 OSD 时间与墙钟一致），说明解码/缩放/编码都正确。
+- **摸底结论（决定后续改法）**：
+  1. `h264_bm` 输出 `AV_PIX_FMT_NV12`，设备地址在 `frame->data[4]/[5]`、
+     stride 在 `linesize[4]/[5]`；可直接 `bm_image_attach` 给 bmcv，**无需 mmap/拷贝**。
+  2. 模型输入是 fp32 时用 `bmcv_image_convert_to(alpha=1/255)`；
+     `bm_image_get_device_mem` + `bmrt_tensor_with_device` 把图像设备内存直接当输入张量。
+  3. `bmcv_image_jpeg_enc` **只接受 NV12**（BGR_PACKED/PLANAR 都报不支持），
+     与 sail `imencode`（`bm_image_to_mat`+`cv::imencode`，CPU 路径）不同，
+     集成时预览/告警图走设备侧 NV12 编码。
+- **验证命令**（盒子上）：
+  ```bash
+  cd /data/CT/project/ai/gh-aibox-dev-src/gh-aibox-dev && source env/env.sh
+  g++ $CF tools/routeb_poc/decode_probe.cpp -o /tmp/decode_probe -lavformat -lavcodec -lavutil
+  g++ $CF tools/routeb_poc/poc.cpp -o /tmp/routeb_poc -lavformat -lavcodec -lavutil -lbmcv -lbmrt -lbmlib
+  /tmp/decode_probe "$U" h264_bm 200   # cpu_per_frame=3.25ms
+  /tmp/decode_probe "$U" h264    200   # cpu_per_frame=35.59ms
+  /tmp/routeb_poc  "$U" "$M" 120 /tmp/poc_out.jpg 0.25
+  ```
+- **下一步**：按 PoC 结论把 `src/model.hpp`（Engine→bmrt）与 `src/task.hpp`
+  （Bmcv→bmcv、Decoder→h264_bm/hevc_bm）分两步替换，先 1~2 路接入主程序再铺开。
+
 
 ### 迭代 97 — 2026-11-18 — HEVC bsf 改由 codec_id 判定：排水渠1/乙烯南路2 恢复（2560×1440）
 

@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 41
-updated: 2026-11-12
+iteration: 98
+updated: 2026-11-18
 commit: -
 -->
 
@@ -9,6 +9,28 @@ commit: -
 > 两类都记：已知但暂不修的 bug，以及「看起来像 bug 其实是有意为之」的陷阱（后者更值钱）。
 
 ## 已知缺陷
+
+### KI-041 设备侧 JPEG 编码只接受 NV12（bmcv_image_jpeg_enc）
+
+- 现象：`bmcv_image_jpeg_enc` 传 `FORMAT_BGR_PACKED` 或 `FORMAT_BGR_PLANAR` 都返回
+  `[JPEG-ENC][error] not support this image format`（image_format=11 / 9）。
+- 正确用法：先把要编码的图 `bmcv_image_vpp_convert` 成 `FORMAT_NV12`，再 `bmcv_image_jpeg_enc`。
+  画框可以直接画在 `FORMAT_BGR_PLANAR` 上（`bmcv_image_draw_rectangle` 支持），
+  只是编码前要多一次 NV12 转换。
+- 背景：sail 的 `Bmcv::imencode` 是 `bm_image_to_mat`（设备→系统内存）+ `cv::imencode`（CPU），
+  所以现网带框预览是 CPU 编码；路线 B 改设备侧后 CPU 会再降一截。
+- 相关文件：`tools/routeb_poc/poc.cpp`
+
+### KI-040 sail::Decoder 走的是**软件解码**（路线 B 的直接依据）
+
+- 现象：`Decoder_CC` 用 `avcodec_find_decoder(codecpar->codec_id)`（本 SDK 上是
+  软件 `h264`，输出 `yuvj420p` 在系统内存），随后 `bm_image_copy_host_to_device` /
+  `bmcv_image_vpp_convert` 上设备。
+- 实测（同一路 2560×1440 RTSP，200 帧）：软件 `h264` **35.59 ms CPU/帧**，
+  VPU `h264_bm` **3.25 ms CPU/帧**，帧率相同。这就是 4K 解码烧掉约 6 个核的根因。
+- 路线：`h264_bm`/`hevc_bm` + 帧内 `data[4]/[5]` 设备地址直接 `bm_image_attach`，
+  见 `tools/routeb_poc/README.md`。
+- 相关文件：`env/src/sophon-sail/src/cvwrapper.cpp`（Decoder_CC）、`tools/routeb_poc/decode_probe.cpp`
 
 ### KI-039 合流瓦片：4K 源（4096×2160 → 640×360，×6.4）彩色噪点
 

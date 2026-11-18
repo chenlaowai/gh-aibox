@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 54
-updated: 2026-11-12
+iteration: 98
+updated: 2026-11-18
 commit: -
 -->
 
@@ -9,6 +9,13 @@ commit: -
 一句话定位：把原先 Python 写的 BM1684X AI 检测服务端用 C++ 重写并 Docker 化；当前已是**可运行的 MVP+**：5 类模型、ISC、告警 5+5 视频、多实例调度、36 路压测、硬件加速合流、Docker/Compose 均已跑通；实时预览已按生产方案重构为**按需渲染 + 真内容 10fps + 1080p 只缩不放**。
 
 ## 当前状态
+
+- **2026-11-18 路线 B PoC（迭代 98）**：`tools/routeb_poc/` 用 **sophon-ffmpeg VPU 硬解
+  （`h264_bm`/`hevc_bm`）+ `bmcv_*` + `bmrt_*`** 跑通「解码→缩放/归一化→推理→画框→JPEG」，
+  **不链接 libsail**。实测单路 2560×1440：软件解码 **35.59 ms CPU/帧** vs VPU **3.25 ms**
+  （**10.9 倍**）；全链路 13.24 ms/帧、推理 0.13 ms/帧、120 帧 dmabuf 零增长。
+  这把「4K 解码烧 6 核」的根因（`sail::Decoder` 其实是软件解码）量化并有解了。
+  详见 `tools/routeb_poc/README.md`。
 
 - **2026-11-16 修复（四十三，单体架构）**：新增 `src/ingest_bridge.hpp`，用 **libavformat 在进程内**
   完成“拉流 → mpegts 封装 → 本地 UDP”，**替换掉每路 ffmpeg 子进程**；同一份 TS 扇出到解码与告警环
@@ -301,6 +308,13 @@ commit: -
   - 镜像 902 MB，基于本地 `aibox-api:latest`（Debian 12）+ 拷贝 OpenSSL 1.1。
 
 ## 下一步
+
+0. **路线 B 全量替换**（当前最高优先级）：按 PoC 结论分两步改主程序——
+   ① `src/model.hpp`：`sail::Engine`/`Tensor` → `bmrt_load_bmodel`/`bmrt_launch_tensor_ex`
+   （输入用 `bm_image_get_device_mem`，输出张量预分配复用）；
+   ② `src/task.hpp`：`sail::Decoder` → `h264_bm`/`hevc_bm`（`data[4]/[5]` 设备地址直接
+   `bm_image_attach`）、`sail::Bmcv` → `bmcv_*`（图片 JPEG 走设备侧 NV12 编码）。
+   先接 1~2 路复验告警视频/合流墙，再铺开到 36 路。
 
 0. **单体架构后续**：观察 24h 的 `dmabuf`/RSS 曲线（桥接后 847 且有缓升）；若继续增长，
    优先检查 `IngestBridge` 的 avio/AVPacket 释放与 `MultiDecoder`/`Decoder` 的重建频率；
