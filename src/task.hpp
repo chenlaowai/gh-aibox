@@ -2997,17 +2997,10 @@ private:
             return {even(w * s), even(h * s)};
         }
         if (w <= 1920 && h <= 1080) return {w, h};
-        // bmcv.vpp_resize is only pixel-correct for an integer divisor, so
-        // pick the smallest k that brings the frame under 1920x1080 while
-        // keeping both dimensions divisible (2560x1440 -> 1280x720,
-        // 3840x2160 -> 1920x1080, 4096x2160 -> 1024x540, 3200x1800 ->
-        // 1600x900).  This keeps the whole preview path on VPP/JPU instead
-        // of falling back to a CPU resize.
-        for (int k = 2; k <= 8; ++k) {
-            if (w % k != 0 || h % k != 0) continue;
-            if (w / k > 1920 || h / k > 1080) continue;
-            return {w / k, h / k};
-        }
+        // ADR-097: production's JpegEncoderInstance encodes the source frame
+        // (2560x1440 stays 2560x1440, 3840x2160 stays 3840x2160) and the Web
+        // player scales it. Keep the same default now that JPEG is encoded on
+        // the JPU; operators can still cap with AIDETECT_PREVIEW_WIDTH/HEIGHT.
         return {w, h};
     }
     // Preview encoding used to run inline on the decode thread.  With nine
@@ -4987,7 +4980,7 @@ private:
     int preview_h_ = 0;
     int tile_w_ = 640;
     int tile_h_ = 360;
-    int preview_interval_ms_ = 100;
+    int preview_interval_ms_ = 200;  // 5 fps, aligned with production (ADR-097)
     double src_fps_ = 0;
     double tokens_ = 1.0;
     int64_t tile_interval_ms_ = 120;  // merge tile budget (8.3 Hz)

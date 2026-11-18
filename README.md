@@ -14,7 +14,9 @@ commit: -
   `docker stop -t 5` 从 **6871ms/exit 137（SIGKILL）** 变为 **1447ms/exit 0**，不再产生僵尸容器；
   告警上报门控按生产 `table_alarm_interval` 语义**落盘持久化**（重启后不重复放行，日志
   `alarm interval state loaded: 16 entries`）；`/task/list` 新增 `firstFrameMs`（1.3~5.2s）
-  与 `alarmLatencyMs`（6~45ms）。详见 PROGRESS 迭代 104。
+  与 `alarmLatencyMs`（6~45ms）。预览按 ADR-097 对齐生产：**默认 5fps、按源尺寸编码**
+  （实测 4K 2560×1440/3.81fps、704×576/5.04fps，ADR-097 取代 ADR-023/088）。
+  详见 PROGRESS 迭代 104。
 
 - **2026-11-18 迭代 103（预览全灭根因修复 + 生产对齐第一批）**：预览消失是 `Task::stop_gateway()` 被任务线程与 watchdog 线程**并发 join** → SIGABRT →
   PID1 僵尸容器（`docker ps` Up 但不可 exec，只能重启盒子）。已用 recursive mutex + recorder

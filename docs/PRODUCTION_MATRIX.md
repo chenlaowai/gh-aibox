@@ -14,6 +14,8 @@
 > dmabuf 对象 **1304~1372 稳定**、`bm_live_mb` **565~806**、`hw_jpeg_ok=25/fail=0`、
 > `vpu_1/2=86~100`、RSS 974MB→trim 758~775MB、fd 848~888、32~33/36 ok、restarts=0、
 > `vdi/AllocateDecFrameBuffer` 错误 0；`docker stop -t 5` = **1447ms/exit 0**（优雅停机）。
+> **2026-11-19 01:43 预览对齐（ADR-097）**：单通道预览改为**按源尺寸 + 5fps**，实测
+> 6488 2560×1440/566KB/**3.81 fps**、25K 704×576/102KB/**5.04 fps**、CPU 30s 均值 193%。
 > 我方：`10.10.206.25`（aidetect，容器，`--network host`），36 路任务。
 > 生产：`10.10.207.46`（`./app`，宿主机 systemd），22 路任务；**全程只读**（ps/proc/sysfs/sqlite ro）。
 > 「—」= 该项未采集或不适用；「*」= 历史文档/Web 观测值。
@@ -68,8 +70,8 @@
 | 告警冷却 | `cooldown_time`（默认 180s）+ 算法级 repeat + 每目标 `TargetState`（蓝→红） | 生产 `AlarmIntervalFilter::isAlarmFiltered` + `AlarmRecorder::isSameRectAlarm/getLastALarmTime` + `table_alarm_interval(id,time_ms)`（生产 DB 实表） | **语义一致**：生产按 alarm key 的时间间隔 + 同框判断；我方按目标状态跟踪 + 算法 repeat/任务 cooldown |
 | 告警同框去重 | 同一目标 IoU/中心距匹配后只保留一个 `TargetState`，多算法同目标合成一个框 | `isSameRectAlarm`（同算法同框抑制） | 实现不同，结果一致（我方按目标跟踪，避免“同框不同算法规避冷却”） |
 | JPEG 质量 | `AIDETECT_JPEG_QUALITY`（默认 90，30~100 clamp） | 生产 `QualityOfPreview`（低/中/高 ≈40/70/90） | 可配；默认值仍偏高 |
-| 预览分辨率 | ≤1920×1080（整数倍 VPP 缩放；env 覆盖只缩不放） | 原尺寸 / 1080p | 知情差异（ADR-088：默认 1080p 上限） |
-| 预览帧率上限 | 10 fps（按需渲染） | 生产约 3~5 fps（Web 观测*） | 我们更高 |
+| 预览分辨率 | **按源尺寸**（6488 实测 2560×1440；`AIDETECT_PREVIEW_WIDTH/HEIGHT` 可设上限，只缩不放） | 原尺寸（`JpegEncoderInstance` 不缩放） | **已对齐**（ADR-097，取代 ADR-088） |
+| 预览帧率上限 | **5 fps**（`AIDETECT_PREVIEW_INTERVAL_MS=200`；实测 4K 3.81 fps、704×576 5.04 fps） | 生产约 3~5 fps* | **已对齐**（ADR-097，取代 ADR-023） |
 | 重连退避 | 指数退避 + ISC 候选轮换 + 200ms 开流节流 | 生产有重连机制 | 一致 |
 | 解码器生命周期 | 失败 5 次后重建（已修：先释放后创建、失败路径释放、帧缓冲减半） | 常驻不重建 | **生产更优**（重建代价已压到可控） |
 
@@ -94,7 +96,7 @@
 | 指标 | 我方 | 生产 | 采集方式 |
 |---|---|---|---|
 | 合流墙帧率 | **5.15 fps**（`all_3`，8s 42 帧，平均 750KB/帧） | 约 3~5 fps* | WS 抓帧计数 |
-| 单通道预览帧率 | **3.6~4.7 fps**（1280×720，约 215KB/帧） | 约 3~5 fps* | WS 抓帧计数 |
+| 单通道预览帧率 | **4K 3.81 fps / 704×576 5.04 fps**（ADR-097 后） | 约 3~5 fps* | WS 抓帧计数 |
 | 预览图像 | 1280×720 / 2560×1440，彩色（源为黑白相机时呈灰度） | 同源 | 抓帧 |
 | 检测轮耗时 | **4~39 ms/轮**（36 路并发） | 生产未暴露 | 日志 `detect round ms` |
 | 单次推理 | **0.13~1 ms**（yolov11s fp16 640×640，按模型） | 未暴露 | 日志 `infer stats avg` |
