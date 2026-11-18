@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 103
-updated: 2026-11-18
+iteration: 104
+updated: 2026-11-19
 commit: -
 -->
 
@@ -9,6 +9,41 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 104 — 2026-11-19 — 优雅停机（PID1 SIGTERM）+ 告警门控持久化 + 时延指标；生产告警去重证据
+
+- **重启/停机卡死的根因**：进程是容器 PID 1，Linux 对 PID 1 的默认信号处置是“忽略”，
+  我们没装 SIGTERM handler → `docker stop` 等满超时后 SIGKILL；这次 SIGKILL 又把容器留在
+  `Up` 但 PID1 `<defunct>` 的状态，`docker restart` 直接 hang（与迭代 103 的僵尸容器同源，
+  多次重启只是碰巧成功）。
+- **修复**：`main.cpp` 注册 `SIGTERM/SIGINT -> _exit(0)`（async-signal-safe），让容器干净退出。
+  **实测**：`docker stop -t 5 aidetect` 返回 **1447 ms、exit=0**（修复前 6871 ms、exit=137/SIGKILL），
+  随后 `docker start` 正常、`restarts=0`。
+- **告警上报门控持久化（对齐生产 `table_alarm_interval`）**：生产
+  `libEdgeSystem.so` 有 `AlarmRecorder::getLastALarmTime/setLastALarmTime`、
+  `AlarmIntervalFilter::isAlarmFiltered`，DB 有 `table_alarm_interval(id, time_ms)`
+  ——重启后不会把已上报过的目标立即再报一次。我方原先只有内存 `rt.next_report_ms`，
+  重启首个目标必放行。
+  新增 `src/alarm_state.hpp`：JSON 落盘到
+  `<data_root>/.state/alarm_intervals.json`（key = taskId|model，写入节流 5s，主循环 30s flush），
+  任务启动时按持久化的 `last_ms + gap` 恢复 `next_report_ms`；gate open 时写回。
+  **实测**：文件 854B、16 条记录；两次重启日志均为
+  `alarm interval state loaded: 16 entries`。
+- **时延指标（补 MATRIX §5 的“待补”）**：`/task/list` 每任务新增
+  `firstFrameMs`（任务启动→首帧）与 `alarmLatencyMs`（帧→告警生成）。
+  **实测**：`firstFrameMs` **1.3~5.2 s**（36 路按 1.2s 错峰启动）、
+  `alarmLatencyMs` **6~45 ms**（25K 6ms、钢栈桥 21ms、28K/排水渠 44ms）。
+- **生产告警去重语义补证**：符号 `AlarmIntervalFilter/isSameRectAlarm/FeatureAntiRepeat` +
+  DB `table_alarm_interval`；我方用每目标 `TargetState`（IoU/中心距）+ 任务 `cooldown`
+  + 算法 `repeat_sec` 实现等价效果，详见 `docs/PRODUCTION_ALARM_LOGIC.md §7`。
+  未反编译到 `isSameRectAlarm` 的 IoU 常量，按行为验收（同一目标按间隔、不同目标独立计时）。
+- **验证命令**：`docker stop -t 5` 计时、`docker inspect .State.ExitCode`、
+  `cat <data_root>/.state/alarm_intervals.json`、`/task/list` 的
+  `firstFrameMs/alarmLatencyMs`、`grep "alarm interval state loaded"`。
+- **3 路 ISC 5XX 的外部性复核（01:10，fresh URL）**：龙港-预制场 fresh RTSP 仍
+  `5XX`（0.5s）；凤凰咀-游客中心/博物馆 fresh RTSP 分别 `5XX`（11.5s）与
+  `Invalid data found`（21.7s），fresh RTMP 两路均 `Input/output error`（~18s）。
+  两协议都失败 → ISC/相机侧，不是我们的重连/协议逻辑。
+
 ### 迭代 103 — 2026-11-18 — Web 预览全灭根因：僵尸容器 + stop_gateway 并发 join；设备内存 churn 收敛；生产对齐第一批（设备 JPEG/告警视频/遥测）
 
 - **现象**：23:00 左右 Web 端所有预览消失，`docker ps` 仍显示 `aidetect Up`，但 `docker exec` 报

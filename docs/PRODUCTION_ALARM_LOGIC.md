@@ -120,3 +120,29 @@ TargetState:
   确认后红框；
 - 用 6488 实时预览观察新 `helmet`/`vest` 是否只出现红色违规标签；
 - 对比迁移前后同一摄像头的告警图，确认不再出现红绿标签叠在同一人。
+
+## 7. 告警去重/间隔的逆向补证（2026-11-19，只读证据）
+
+生产 `libEdgeSystem.so` 符号（`prod_edge_strings.txt` / `prod_syms_all.txt`）：
+
+```text
+AlarmIntervalFilter::isAlarmFiltered(...)
+AlarmRecorder::isSameRectAlarm(... cv::Rect_<float>&)
+AlarmRecorder::getLastALarmTime(key, long&) / setLastALarmTime(key, long)
+FeatureAntiRepeat::CheckFeatureOnBegin / doAntiRepeatSummary
+```
+
+生产 DB 实表 `table_alarm_interval(id, time_ms)`（同样是“alarm key -> 上次时间”的持久化），
+说明生产是「按报警 key 的间隔过滤 + 同框过滤」两段式。
+
+我方的等价实现：
+
+- `update_alarm()` 为每个检测目标维护 `TargetState`（IoU>0.15 或中心距匹配），
+  目标独立走蓝框倒计时/确认/消失删除——天然实现“同框/同目标”抑制；
+- `cooldown_time`（任务级）+ `repeat_sec`（算法级，来自生产参数 `*_repeat_sec/*_alarm_sec`）
+  共同决定上报间隔；
+- 多算法同目标合成一个框、只保留一种状态，避免同框多标签互相绕过冷却。
+
+**未 100% 断言的细节**：`AlarmIntervalFilter` 的间隔来源（`cooldown_time` 还是
+`table_alarm_interval` 的独立值）与 `isSameRectAlarm` 的 IoU 阈值未反编译到常量级；
+当前按“行为一致”验收（同一目标 3 分钟冷却、不同目标各自计时、告警率与生产同量级）。

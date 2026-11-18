@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 103
-updated: 2026-11-18
+iteration: 104
+updated: 2026-11-19
 commit: -
 -->
 
@@ -10,8 +10,13 @@ commit: -
 
 ## 当前状态
 
-- **2026-11-18 迭代 103（预览全灭根因修复 + 生产对齐第一批）**：
-  预览消失是 `Task::stop_gateway()` 被任务线程与 watchdog 线程**并发 join** → SIGABRT →
+- **2026-11-19 迭代 104（停机/门控/时延）**：注册 PID1 `SIGTERM/SIGINT → _exit(0)`，
+  `docker stop -t 5` 从 **6871ms/exit 137（SIGKILL）** 变为 **1447ms/exit 0**，不再产生僵尸容器；
+  告警上报门控按生产 `table_alarm_interval` 语义**落盘持久化**（重启后不重复放行，日志
+  `alarm interval state loaded: 16 entries`）；`/task/list` 新增 `firstFrameMs`（1.3~5.2s）
+  与 `alarmLatencyMs`（6~45ms）。详见 PROGRESS 迭代 104。
+
+- **2026-11-18 迭代 103（预览全灭根因修复 + 生产对齐第一批）**：预览消失是 `Task::stop_gateway()` 被任务线程与 watchdog 线程**并发 join** → SIGABRT →
   PID1 僵尸容器（`docker ps` Up 但不可 exec，只能重启盒子）。已用 recursive mutex + recorder
   `life_mu_` 修复，并修掉解码器重建时的设备内存 churn（失败也释放、frame unref、先释放后创建、
   `extra_frame_buffer_num=1`、200ms 节流）：dma-buf 对象稳定在 1288~1342、`bm_live_mb` 559~726、

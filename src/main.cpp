@@ -15,6 +15,13 @@ static void crash_handler(int sig) {
     _exit(128 + sig);
 }
 
+// The process runs as container PID 1.  Linux ignores signals with the default
+// disposition for PID 1, so `docker stop` used to wait out its timeout and then
+// SIGKILL us. That abrupt kill repeatedly left the container in a "Up but
+// defunct / docker restart hangs" state that needed a box reboot (KI-046).
+// Handle TERM/INT and exit immediately so the container stops cleanly.
+static void term_handler(int) { _exit(0); }
+
 int main(int argc, char** argv) {
     using namespace aidetect;
     if (argc >= 2 && std::string(argv[1]) == "--dump-only") {
@@ -66,6 +73,8 @@ int main(int argc, char** argv) {
     signal(SIGSEGV, crash_handler);
     signal(SIGABRT, crash_handler);
     signal(SIGBUS, crash_handler);
+    signal(SIGTERM, term_handler);
+    signal(SIGINT, term_handler);
     AppConfig cfg = AppConfig::from_env();
     if (cfg.jwt_secret.empty()) {
         log_warn("AIDETECT_JWT_SECRET is empty; all authenticated requests will be rejected");
@@ -150,6 +159,9 @@ int main(int argc, char** argv) {
         if (max_dmabuf <= 0 && max_rss_mb <= 0) return;
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(30));
+            // Persist the per-(task, algorithm) report gate so a restart does
+            // not re-report the same event (production table_alarm_interval).
+            alarm_state().flush();
             int dmabuf = 0;
             try {
                 for (auto& e : std::filesystem::directory_iterator("/proc/self/fd")) {

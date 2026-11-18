@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 103
-updated: 2026-11-18
+iteration: 104
+updated: 2026-11-19
 commit: -
 -->
 
@@ -43,6 +43,10 @@ commit: -
 - **修复**：`Task` 用 `std::recursive_mutex gateway_mu_` 串行化 start/stop；
   `IngestBridge`/`TsSegmentRecorder`/`AlarmRingRecorder` 的 start/stop 加 `life_mu_`，
   并在自身线程调用 stop 时 `detach()` 而不是 `join()`。
+- **修复 2（停机）**：进程是容器 PID 1，Linux 对 PID 1 默认**忽略** SIGTERM，导致
+  `docker stop` 等满超时后 SIGKILL——这正是僵尸容器/`docker restart` hang 的触发条件。
+  `main.cpp` 已注册 `SIGTERM/SIGINT -> _exit(0)`；实测 `docker stop -t 5` **1447ms / exit=0**
+  （修复前 6871ms / exit=137）。
 - **注意**：崩溃后 PID1 变 `<defunct>` 是 docker 的已知老问题，不要反复 `docker restart`，
   直接重启盒子后 `docker rm -f` 重建容器。
 

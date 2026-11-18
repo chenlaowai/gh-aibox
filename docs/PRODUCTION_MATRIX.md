@@ -61,7 +61,8 @@
 | 告警视频时长 | `pre=round(video_duration×0.5)`、`post=duration-pre` → 实测 **8.98s** | `VideoRecordSec=10` + `VideoRecordPrefix=0.5`（生产 DB `table_preference`，值 10 / 0.500000）→ **前 5s+后 5s** | **已对齐**（比例驱动，不再硬编码 5s） |
 | 告警视频编码 | H.264 / 1280×720（HEVC 源转码 `h264_bm`；转码忙时保留 HEVC） | H.264（`Mp4RecorderEngine` 可切 0/1） | **已对齐**（实测 H.264/1280×720） |
 | 告警视频体积限制 | `-fs AIDETECT_VIDEO_LIMIT_MB`（默认 20MB） + 转码 60s 超时 + 残留启动清理 | `VideoRecordLimitMB=20` | **已对齐** |
-| 告警冷却 | `cooldown_time`（默认 180s）+ 算法级 repeat | 同 | 一致 |
+| 告警冷却 | `cooldown_time`（默认 180s）+ 算法级 repeat + 每目标 `TargetState`（蓝→红） | 生产 `AlarmIntervalFilter::isAlarmFiltered` + `AlarmRecorder::isSameRectAlarm/getLastALarmTime` + `table_alarm_interval(id,time_ms)`（生产 DB 实表） | **语义一致**：生产按 alarm key 的时间间隔 + 同框判断；我方按目标状态跟踪 + 算法 repeat/任务 cooldown |
+| 告警同框去重 | 同一目标 IoU/中心距匹配后只保留一个 `TargetState`，多算法同目标合成一个框 | `isSameRectAlarm`（同算法同框抑制） | 实现不同，结果一致（我方按目标跟踪，避免“同框不同算法规避冷却”） |
 | JPEG 质量 | `AIDETECT_JPEG_QUALITY`（默认 90，30~100 clamp） | 生产 `QualityOfPreview`（低/中/高 ≈40/70/90） | 可配；默认值仍偏高 |
 | 预览分辨率 | ≤1920×1080（整数倍 VPP 缩放；env 覆盖只缩不放） | 原尺寸 / 1080p | 知情差异（ADR-088：默认 1080p 上限） |
 | 预览帧率上限 | 10 fps（按需渲染） | 生产约 3~5 fps（Web 观测*） | 我们更高 |
@@ -94,13 +95,14 @@
 | 检测轮耗时 | **4~39 ms/轮**（36 路并发） | 生产未暴露 | 日志 `detect round ms` |
 | 单次推理 | **0.13~1 ms**（yolov11s fp16 640×640，按模型） | 未暴露 | 日志 `infer stats avg` |
 | 推理吞吐 | people 121 次/5s ≈ 24 次/s（单模型） | 未暴露 | 日志 `infer stats n=` |
-| 告警图片 | 1280×720 ~220KB / 2560×1440 ~240KB | 同源 | 抽样 |
-| 告警视频 | H.264 / 1280×720 / **7.02s** / 898KB | H.264，≈5+5s | `ffprobe` / 生产 dump4 设计 |
-| 告警产出速率 | 30 分钟 145 图 / 138 视频 | 未取（`table_alarm_row` 上限 1000 行） | 文件计数 |
-| 任务成功率 | **33/36**（3 路 ISC 侧问题） | 22 路配置中约 6~8 路有画面（历史*） | 日志 + DB |
-| 重连次数 | 0/10min（本轮稳态） | 生产 NRestarts=0、无重建 | 日志 |
-| 端到端时延（相机→预览） | 未测（OSD 与墙钟一致，秒级） | 未测 | **待补** |
-| 冷启动到首帧 | ~2~5s（日志 first frame） | 未测 | **待补** |
+| 告警图片 | 1280×720 ~220KB / 2560×1440 ~240KB（实测 25K 122KB、6488 298KB） | 同源 | 抽样 |
+| 告警视频 | H.264 / 1280×720 / **8.98s** / 1.13MB（pre5+post5，≤20MB） | H.264，`VideoRecordSec=10`/`Prefix=0.5` | `ffprobe` / 生产 dump4 设计 |
+| 告警产出速率 | 30 分钟 145 图 / 138 视频（历史）；迭代 103 实测 5 分钟 19 个视频 | 未取（`table_alarm_row` 上限 1000 行） | 文件计数 |
+| 任务成功率 | **32~33/36**（3 路 ISC 侧 5XX + 偶发抖动） | 22 路配置中约 6~8 路有画面（历史*） | 日志 + DB |
+| 重连次数 | 偶发 ISC 抖动 1 分钟内自愈 | 生产 NRestarts=0、无重建 | 日志 |
+| 告警生成延迟（帧→告警图/上报） | **6~45 ms**（`/task/list.alarmLatencyMs`） | 未暴露 | 新增指标 |
+| 端到端时延（相机→预览） | 未精确测（OSD 与墙钟一致，秒级） | 未测 | 待补 |
+| 冷启动到首帧 | **1.3~5.2 s**（`/task/list.firstFrameMs`，36 路按 1.2s 错峰） | 未测 | 新增指标 |
 
 ## 6. 结论与差距
 

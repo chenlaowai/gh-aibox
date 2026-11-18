@@ -19,6 +19,7 @@
 #include <opencv2/freetype.hpp>
 #include "common.hpp"
 #include "alarm_recorder.hpp"
+#include "alarm_state.hpp"
 #include "ingest_bridge.hpp"
 #include "ts_segment_recorder.hpp"
 #include "decode_pool.hpp"
@@ -170,6 +171,18 @@ public:
                      " algo_sec=" + std::to_string(rt->config.repeat_sec) +
                      " task_sec=" + std::to_string(cfg_.cooldown_seconds) +
                      " explicit=" + (rt->config.has_repeat_param ? "1" : "0"));
+            // Restore the persisted report gate (production table_alarm_interval):
+            // a restart must not re-report an event whose interval has not
+            // elapsed yet.
+            const int64_t last = alarm_state().last(cfg_.task_id, rt->config.name);
+            if (last > 0) {
+                int64_t gap = std::max<int64_t>(cfg_.cooldown_seconds * 1000LL,
+                                                static_cast<int64_t>(
+                                                    rt->config.repeat_sec * 1000.0f));
+                if (gap <= 0) gap = std::max(1, cfg_.cooldown_seconds) * 1000LL;
+                rt->last_alarm_ms = last;
+                if (now_ms() - last < gap) rt->next_report_ms = last + gap;
+            }
         }
         if (const char* pw = std::getenv("AIDETECT_PREVIEW_WIDTH")) preview_w_ = std::max(320, std::atoi(pw));
         if (const char* ph = std::getenv("AIDETECT_PREVIEW_HEIGHT")) preview_h_ = std::max(180, std::atoi(ph));
@@ -338,6 +351,7 @@ public:
             return;
         }
         running_ = true;
+        task_started_ms_ = now_ms();
         infer_thread_ = std::thread([this] { infer_loop(); });
         preview_thread_ = std::thread([this] { preview_loop(); });
         thread_ = std::thread([this] { run(); });
@@ -529,6 +543,10 @@ public:
         j["lastFrameAgeMs"] = lastFrameAgeMs();
         j["lastProgressAgeMs"] = lastProgressAgeMs();
         j["everFrame"] = ever_frame_.load();
+        // Observability parity with production's TaskInstance metrics: time
+        // from task start to first frame, and frame->alarm generation latency.
+        j["firstFrameMs"] = first_frame_ms_.load();
+        j["alarmLatencyMs"] = last_alarm_latency_ms_.load();
         return j;
     }
 private:
@@ -2490,6 +2508,7 @@ private:
                         st.last_alarm_ms = now;
                         rt.last_alarm_ms = now;
                         rt.next_report_ms = now + report_gap;
+                        alarm_state().set(cfg_.task_id, rt.spec->name, now);
                         last_alarm_ms_ = now;
                         log_info(cfg_.task_id + " alarm gate open model=" +
                                  rt.spec->name + " gap_ms=" +
@@ -2502,6 +2521,7 @@ private:
                 st.last_alarm_ms = now;
                 rt.last_alarm_ms = now;
                 rt.next_report_ms = now + report_gap;
+                alarm_state().set(cfg_.task_id, rt.spec->name, now);
                 last_alarm_ms_ = now;
                 log_info(cfg_.task_id + " alarm gate open model=" + rt.spec->name +
                          " gap_ms=" + std::to_string(report_gap));
@@ -2831,7 +2851,10 @@ private:
         current_frame_ms_ = frame_ts;
         if (need_recover_status_.exchange(false))
             publish_status("监控视频流已恢复");
-        if (!ever_frame_.exchange(true)) set_stream_error("");
+        if (!ever_frame_.exchange(true)) {
+            set_stream_error("");
+            first_frame_ms_ = frame_ts - task_started_ms_;
+        }
             last_progress_ms_ = now_ms();
         if (debug_alarm_.exchange(false) && !models_.empty()) {
             std::vector<Detection> dd;
@@ -4614,6 +4637,7 @@ private:
         report["video"] = "";
         log_warn(cfg_.task_id + " ALARM model=" + model_name + " count=" +
                  std::to_string(count) + " img=" + img_path);
+        last_alarm_latency_ms_ = now_ms() - current_frame_ms_;
         // Production: VideoRecordSec (total) + VideoRecordPrefix=0.5, i.e. the
         // clip is split half before / half after the alarm frame.  The old
         // hardcoded pre=5 only matches the default duration of 10 s.
@@ -4942,6 +4966,10 @@ private:
     std::vector<Detection> dets_persons_;
     std::deque<DetSnapshot> dets_history_;
     int64_t dets_ms_ = 0;
+    // Observability: task start -> first frame, and last frame -> alarm.
+    int64_t task_started_ms_ = 0;
+    std::atomic<int64_t> first_frame_ms_{0};
+    std::atomic<int64_t> last_alarm_latency_ms_{0};
     int64_t last_alarm_ms_ = 0;
     int frame_w_ = 0;
     int frame_h_ = 0;
