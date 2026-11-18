@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 101
+iteration: 102
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,62 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 102 — 2026-11-18 — 整镜像切到 libsophon 0.5.1(SoC)+mw0.14 成功；ISC 会话缓存失效与协议钉死
+
+- **上一轮 0.5.1 混挂失败的真因（已定位并修正）**：用的是
+  `reference/release/SDK-23.09-LTS-SP5/libsophon_20250825_113547/libsophon_0.5.1-LTS_aarch64.tar.gz`
+  ——这是**通用/PCIe 版**，其 `libbmjpulite` 打开 `/dev/bm-sophon`；BM1684X 只暴露 `/dev/jpu`，
+  于是 `jdi_init(): Can't open jpu driver ret=0xffffffff` → Sophon OpenCV 0.14 的 JPEG 编码器加载
+  失败（`Error! enc load failed`），`cv::imencode` 抛 `(-215:Assertion failed) code` → SIGABRT。
+  正确包是同发布里的 **`sophon-img_20250825_162013/libsophon_soc_0.5.1-LTS_aarch64.tar.gz`**
+  （其 JPU 库字符串为 `/dev/jpu`、`/dev/bm-vpp`）。隔离验证：`jpegtest014`（直接 `cv::imencode`
+  纯色 1280×720）在通用版下报 `Can't open jpu driver`，换 SoC 版后
+  `Open /dev/jpu successfully ... imencode ok=1 size=15016`。
+- **另外两个运行时坑**：
+  1. OpenCV 0.14 `libopencv_core.so` 的 `DT_NEEDED` 含 `libopenblas.so.0`（SoC 包内已带；
+     通用包没有），缺失时 opencv 加载不了。
+  2. **bmrt 0.5.1 不能用只读 bind 挂载加载 bmodel**：`/models:ro` 下
+     `[BMODEL][ModelCtx:390] FATAL: File[...] open failed`；同一文件 `cp /tmp` 或 `:rw` 挂载即可
+     （`model_probe051 /models/.../people.bmodel` 失败、`/tmp/p.bmodel` 成功）。故容器 `/models`
+     改 `:rw`（应用只读，不写模型）。
+- **整镜像替换（不是混挂）**：`Dockerfile` = `FROM aidetect:current` + SoC libsophon 0.5.1 +
+  `sophon-mw-soc_0.14.0`，并把 `/opt/sophon/{libsophon-current,sophon-ffmpeg-latest,sophon-opencv-latest}`
+  三个指针全部改指 0.5.1/0.14（否则 dlopen 仍会取到 0.5.3/0.15 造成混 ABI），`ENV LD_LIBRARY_PATH`
+  指向新三套 lib。构建出 `aidetect:routeb051d`（前几版 b/c 仅用于排障，保留不删）。
+  二进制用 SoC 0.5.1 头文件 + mw0.14 重新编译（`env/env.sh` 同步钉到 SoC 0.5.1/0.14）。
+- **切换过程**：保存旧容器 inspect 与二进制（`bin/aidetect.pre051_20261118`）→ 停旧容器、
+  `docker rename aidetect aidetect_prev051`（`--restart=no` 留作回滚）→ 用 routeb051d 以**相同
+  env/binds**（`--network host --privileged --security-opt label=disable`，models 改 rw，
+  其余 env 与旧容器逐项一致）重建 `aidetect`。
+  中途排障重启过一次开发盒（16:53）；`docker create` 的容器不随重启自启，重启后手动 `docker start`。
+- **切换后实测（17:01~17:05，36 路）**：`docker inspect` restarts=0、日志无 FATAL/abort；
+  `/task/list` 36 任务 **30 ok**；25K 预览 704×576 彩色 + ROI（125,344B）、
+  龙港钢栈桥 1280×720 彩色（215,528B）、6488 2560×1440（298,184B）；
+  最新告警视频 `ffprobe` = **9.68s**（pre5+post5）、621KB；
+  `docker stats` CPU **162.7%**（迭代 101 的 0.5.3 为 191~197%）、RSS 1.09~1.12GB、
+  threads 277~280、`Open /dev/jpu successfully`。
+  注意告警视频编码跟随源（25K 源为 HEVC 704×576，录制器只转封装不转码），与迭代 101
+  记录的「H.264/1280×720」不冲突（那条来自 H.264 源通道）。
+- **ISC 对齐（17:12 部署，17:15 复测）**：
+  1. `AIDETECT_ISC_PROTOCOL` 改为**硬钉**：显式设置时压过任务候选协议。原因：本机 1935 可达，
+     但 ISC 的按相机 RTMP 转码会话池很小，fresh RTMP URL 用 `ffmpeg -t 1` 探测 18s 未出流；
+     同一相机 fresh RTSP URL **0.5~2.1s** 出流（乙烯南路2 HEVC 2560×1440@25、25K HEVC 704×576@25）。
+     不钉死会让每次重连先在 RTMP 上卡十几秒，表现就是一直 `connecting`。
+  2. `IscResolver` 增加 `invalidate(isc_url)`：ISC 开到流失败/解码器打开失败/读失败重连时清掉该
+     相机的 previewURL 缓存，下次重新向 Artemis 取会话——**生产就是每次重连重新取 previewURL**。
+     实证必要：乙烯南路2 fresh RTSP URL 可出流，但任务用缓存里的旧 URL 一直 `Input/output error`。
+  3. **部署后复测**：36 任务 **33 ok**（部署前 30 ok）；乙烯南路2、排水渠1、测试_18 恢复出图
+     （排水渠1 已正常产生 `vest` 告警视频）；25K 704×576（122,240B）、龙港钢栈桥 1280×720
+     （204,536B）预览正常；restarts=0、无 FATAL。
+     剩余 3 路 `5XX`（龙港-预制场、凤凰咀-游客中心、凤凰咀-博物馆）——龙港-预制场即使
+     **新解析**的 RTSP URL 也 `Server returned 5XX`（0.5s 即返），属 ISC/相机侧。
+     该结论用 fresh-URL 探测脚本固定（`.work/dev/_iscprobe.sh`/`_iscprobe2.sh`：HMAC 直连 Artemis，
+     再 `docker exec aidetect ffmpeg -rtsp_transport tcp -i URL -t 1 -f null -`）。
+- **回滚**：`docker rm -f aidetect && docker rename aidetect_prev051 aidetect`，并把
+  `bin/aidetect.pre051_20261118` 改名回 `bin/aidetect` 后 `docker start aidetect`（旧镜像
+  `aidetect:current` 未动）。备份：`bin/container-aidetect-20261118.json`、`bin/aidetect.pre_routeb_20261118`。
+- **验证命令**：`docker inspect aidetect --format '{{.State.RestartCount}}'`、`/task/list` 计数、
+  `python3 /data/CT/routeb_dev/wsgrab.py <taskId> <out> <jwt>`、`ffprobe -show_entries format=duration`。
 ### 迭代 101 — 2026-11-18 — 预览/告警配色/告警视频窗口修复；SDK 0.5.1 同步（运行时待重建镜像）
 
 - **预览空白（704x576 等 ≤1080p 通道）**：`image_copy_to` 用 `bmcv_image_copy_to`，该接口只支持 packed；

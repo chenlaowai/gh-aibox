@@ -864,6 +864,9 @@ private:
                     }
                     if (!gateway_ok) {
                         ++open_fail_count_;
+                        // The cached previewURL pointed at a dead ISC session;
+                        // drop it so the next attempt gets a fresh one.
+                        if (isc_source) IscResolver::invalidate(cfg_.channel_address);
                         publish_status("正在连接监控视频流...");
                         std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                         continue;
@@ -885,6 +888,7 @@ private:
                         // force the next ISC candidate (other streamType or
                         // protocol) instead of retrying the same stream.
                         ++isc_rot_;
+                        IscResolver::invalidate(cfg_.channel_address);
                         stop_gateway();
                         ++open_fail_count_;
                         std::this_thread::sleep_for(
@@ -953,6 +957,11 @@ private:
                     if (fail_count >= 5) {
                         decoder_holder.reset();
                         decoder_.reset();
+                        // A read failure means the ISC media session is gone
+                        // (or the gateway rotated it); production re-resolves
+                        // the previewURL on every reconnect, so drop the cache
+                        // entry instead of blindly reusing the dead URL.
+                        if (isc_source) IscResolver::invalidate(cfg_.channel_address);
                         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
                         bool gateway_ok = true;
                         // ISC URLs are single-use: resolve() is called on every attempt and
@@ -992,12 +1001,18 @@ private:
                                 publish_status("监控视频流已恢复");
                             } else {
                                 decoder_.reset();
-                                if (isc_source) ++isc_rot_;
+                                if (isc_source) {
+                                    ++isc_rot_;
+                                    IscResolver::invalidate(cfg_.channel_address);
+                                }
                                 publish_status("重连失败，继续重试");
                             }
                         } catch (const std::exception& e) {
                             decoder_.reset();
-                            if (isc_source) ++isc_rot_;
+                            if (isc_source) {
+                                ++isc_rot_;
+                                IscResolver::invalidate(cfg_.channel_address);
+                            }
                             publish_status(std::string("重连失败: ") + e.what());
                         }
                     }

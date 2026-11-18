@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 98
+iteration: 102
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,31 @@ commit: -
 > 两类都记：已知但暂不修的 bug，以及「看起来像 bug 其实是有意为之」的陷阱（后者更值钱）。
 
 ## 已知缺陷
+
+### KI-045 0.5.1 必须用 SoC 包 + models 可写（否则启动 abort 或 bmodel open failed）
+
+- **包选错**：`libsophon_0.5.1-LTS_aarch64.tar.gz`（通用/PCIe）的 `libbmjpulite` 打开
+  `/dev/bm-sophon`；BM1684X 只有 `/dev/jpu` → `jdi_init(): Can't open jpu driver`
+  → Sophon OpenCV 0.14 的 JPEG 编码器加载失败 → `cv::imencode` 抛
+  `(-215:Assertion failed) code` → SIGABRT 崩溃循环。必须用同一发布里的
+  **`libsophon_soc_0.5.1-LTS_aarch64.tar.gz`**（字符串为 `/dev/jpu`、`/dev/bm-vpp`）。
+- **models 只读挂载**：bmrt 0.5.1 `load_bmodel` 对 `-v ...:ro` 报
+  `[BMODEL][ModelCtx:390] FATAL: File[...] open failed`（同一文件在 `/tmp` 或 `:rw` 下正常）。
+  容器 `/models` 必须 `:rw`（应用自身不写模型）。
+- **`/opt/sophon/*-current|latest` 指针**：切换整套 SDK 时必须一起改指 0.5.1/0.14，
+  否则 `dlopen` 取到残留的 0.5.3/0.15 库，仍是混 ABI。
+- 相关：`env/env.sh`、`docker/` 镜像、PROGRESS 迭代 102。
+
+### KI-044 ISC previewURL 是**会话**不是地址：缓存不失效就会一直 connecting
+
+- ISC 每次 `previewURLs` 返回的是 `openUrl/<token>` 一次性媒体会话；会话被踢/过期后，
+  再用缓存 URL 打开会 `Input/output error` 或 `5XX`，而**重新解析一次就能出流**
+  （实测乙烯南路2：fresh RTSP URL `ffmpeg -t 1` 2.1s 出 HEVC 2560×1440@25，任务用旧缓存 URL 一直 connecting）。
+- 生产是每次重连重新取 previewURL；我方原先缓存 30 分钟只防会话池打爆，失败时也不清。
+  现已加 `IscResolver::invalidate()`：gateway 开流失败/解码器打开失败/读失败重连时清该相机缓存。
+- 另：本机 1935 可达但 ISC 按相机 RTMP 转码池很小（fresh RTMP URL 18s 未出流），
+  `AIDETECT_ISC_PROTOCOL=rtsp` 现在是**硬钉**（压过任务候选协议），否则每次重连先卡 RTMP。
+- 龙港-预制场即使用**新** RTSP URL 也 0.5s 返 `5XX`，属 ISC/相机侧，不是客户端逻辑。
 
 ### KI-043 packed 图 stride 与设备侧画线（路线 B 预览空白的真凶）
 

@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 101
+iteration: 102
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,15 @@ commit: -
 一句话定位：把原先 Python 写的 BM1684X AI 检测服务端用 C++ 重写并 Docker 化；当前已是**可运行的 MVP+**：5 类模型、ISC、告警 5+5 视频、多实例调度、36 路压测、硬件加速合流、Docker/Compose 均已跑通；实时预览已按生产方案重构为**按需渲染 + 真内容 10fps + 1080p 只缩不放**。
 
 ## 当前状态
+
+- **2026-11-18 迭代 102（SDK 对齐生产成功）**：容器已从 0.5.3/0.15 整镜像切到
+  **libsophon 0.5.1(SoC)+sophon-mw 0.14.0**（`aidetect:routeb051d`），JPU/OpenCV/ffmpeg/推理全链路
+  正常：36 任务 **33 ok**（ISC 修复部署后）、CPU 162~254%、告警视频 9.68s、
+  25K/龙港钢栈桥均有彩色预览、restarts=0。
+  关键坑：必须用 **`libsophon_soc_0.5.1`**（`/dev/jpu`），通用版走 `/dev/bm-sophon` 必崩；
+  0.5.1 bmrt 还需 **models 挂载可写**。ISC 侧改为「协议钉死 + 失败失效 previewURL 缓存」
+  （乙烯南路2/排水渠1/测试_18 已恢复）；剩 3 路 5XX（龙港-预制场等）属 ISC/相机侧。
+  详见 PROGRESS 迭代 102。
 
 - **2026-11-18 迭代 101**：修好 ≤1080p 通道预览空白（planar 拷贝）、标签/任务编号彩虹乱码（按行上传）、告警图掉色（planar→packed 读回）、告警视频窗口（现 10.83s，含前后各 5s）；设备 handle 改进程级共享后崩溃消失。SDK 已切 0.5.1+mw0.14 编译通过，但运行时混挂库会 abort，待整镜像替换。
 
@@ -316,22 +325,26 @@ commit: -
   - 告警视频只支持 H.264/H.265 输入；mpeg4 本地视频无法 dump。
   - HTTP/WS 仍是线程/连接同步 Beast，不是最终 async 方案。
   - 曾因频繁强杀进程/驱动异常导致 JPU 卡死；重启盒子后恢复。生产要优雅停服务。
-  - 镜像 902 MB，基于本地 `aibox-api:latest`（Debian 12）+ 拷贝 OpenSSL 1.1。
+  - 镜像 `aidetect:routeb051d` ≈1.44 GB（同时保留 0.5.1/0.14 与 0.5.3/0.15 两套 SDK）；
+    基于本地 `aibox-api:latest`（Debian 12）+ 拷贝 OpenSSL 1.1。
+  - 0.5.1 运行时必须 `-v /models:/models:rw`（bmrt 0.5.1 无法从只读 bind 打开 bmodel）、
+    必须 `--privileged`（`/dev/jpu`、`/dev/bmdev-ctl`）；`/opt/sophon/*-current|latest` 三个指针
+    必须一起指向 0.5.1/0.14，否则 dlopen 会混入 0.5.3/0.15。
 
 ## 下一步
 
-0. **观察路线 B 稳定性**：当前 `decoder_` 已改 `shared_ptr`，需连续观察 ≥24h
-   （崩溃/僵尸重启、RSS、dmabuf、重连次数）；`get_tpu_util`/`get_vpu_util` 暂时返回 0
-   （可以接 `/proc/jpuinfo` 或 bm 驱动接口补齐，仅影响 `/get_occupancy` 展示）。
-   设备侧 JPEG（`bmcv_image_jpeg_enc`，只吃 NV12）可作为下一步 CPU 优化项：
-   现在 `imencode` 仍是 `bm_image_to_mat` + `cv::imencode`。
+0. **0.5.1 运行时 soak（当前最高优先级）**：`aidetect` 已跑在
+   `libsophon 0.5.1(SoC)+mw0.14`（镜像 `aidetect:routeb051d`），需连续观察 ≥24h：
+   restarts/崩溃、RSS 与 dmabuf 斜率、JPU `/proc/jpuinfo`、ISC 重连次数、告警视频产量与时长。
+   同时把本轮「协议钉死 + previewURL 失败失效」的二进制部署后复测 36 路。
 
-0. **路线 B 全量替换**（当前最高优先级）：按 PoC 结论分两步改主程序——
-   ① `src/model.hpp`：`sail::Engine`/`Tensor` → `bmrt_load_bmodel`/`bmrt_launch_tensor_ex`
-   （输入用 `bm_image_get_device_mem`，输出张量预分配复用）；
-   ② `src/task.hpp`：`sail::Decoder` → `h264_bm`/`hevc_bm`（`data[4]/[5]` 设备地址直接
-   `bm_image_attach`）、`sail::Bmcv` → `bmcv_*`（图片 JPEG 走设备侧 NV12 编码）。
-   先接 1~2 路复验告警视频/合流墙，再铺开到 36 路。
+0. **ISC 剩余问题（外部依赖）**：龙港-预制场用**新解析**的 RTSP URL 仍 `Server returned 5XX`
+   （0.5s 即返），乙烯南路2 新 URL 可出流——前者需 ISC/相机侧排查，后者已由缓存失效逻辑覆盖。
+   本机 1935 可达但按相机 RTMP 转码池很小（fresh RTMP 18s 未出流），故钉 `AIDETECT_ISC_PROTOCOL=rtsp`；
+   若 ISC 侧放开 RTMP 会话/转码配额，去掉该 env 即回到生产同款 RTMP。
+
+0. **路线 B 全量替换**：已完成（迭代 99，`ldd` 无 libsail）；PoC 见 `tools/routeb_poc/`。
+   设备侧 JPEG（`bmcv_image_jpeg_enc`，只吃 NV12）仍可作 CPU 优化项（当前 `cv::imencode` 走 CPU）。
 
 0. **单体架构后续**：观察 24h 的 `dmabuf`/RSS 曲线（桥接后 847 且有缓升）；若继续增长，
    优先检查 `IngestBridge` 的 avio/AVPacket 释放与 `MultiDecoder`/`Decoder` 的重建频率；

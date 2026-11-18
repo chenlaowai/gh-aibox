@@ -63,12 +63,16 @@ public:
         std::string proto = u.protocol;
         if (!proto.empty() && proto != "rtsp" && proto != "rtmp")
             proto = "rtsp";
-        if (!protocol_override.empty())
+        // AIDETECT_ISC_PROTOCOL is an explicit per-box override: on this box
+        // the ISC RTMP gateway (1935) is reachable but its per-camera transcode
+        // session pool is tiny, so RTMP attempts stall for 15-20s and starve
+        // the reconnect loop.  When the operator pins the protocol, it must win
+        // over the candidate protocol chosen by the task.
+        const char* force_proto = std::getenv("AIDETECT_ISC_PROTOCOL");
+        if (force_proto && *force_proto)
+            proto = force_proto;
+        else if (!protocol_override.empty())
             proto = protocol_override;
-        else {
-            const char* force_proto = std::getenv("AIDETECT_ISC_PROTOCOL");
-            if (force_proto && *force_proto) proto = force_proto;
-        }
         if (proto != "rtsp" && proto != "rtmp") proto = "rtsp";
         const char* rtmp_proxy = std::getenv("AIDETECT_ISC_RTMP_PROXY");
         const bool have_rtmp_proxy = rtmp_proxy && *rtmp_proxy;
@@ -85,16 +89,13 @@ public:
         // Reuse the ISC previewURL per camera/protocol/streamType. Every task
         // reconnect used to request a brand-new ISC session; with 30+ tasks
         // that exhausted the ISC session pool and produced DESCRIBE 500s.
-        static std::mutex cache_mu;
-        static std::unordered_map<std::string,
-                                  std::pair<std::string, int64_t>> url_cache;
         std::string cache_key = isc_url + "|" + proto + "|" +
                                 std::to_string(u.stream_type);
         std::string stale_url;
         {
-            std::lock_guard<std::mutex> lk(cache_mu);
-            auto it = url_cache.find(cache_key);
-            if (it != url_cache.end()) {
+            std::lock_guard<std::mutex> lk(cache_mu_);
+            auto it = url_cache_.find(cache_key);
+            if (it != url_cache_.end()) {
                 if (now_ms - it->second.second < 1800000)
                     return it->second.first;
                 // Keep the last URL as a fallback.  ISC sometimes answers
@@ -175,13 +176,34 @@ public:
             return proxied;
         }
         {
-            std::lock_guard<std::mutex> lk(cache_mu);
-            url_cache[cache_key] = {url, now_ms};
+            std::lock_guard<std::mutex> lk(cache_mu_);
+            url_cache_[cache_key] = {url, now_ms};
         }
         return url;
     }
 
+    // A cached previewURL is a live media session, not a permanent address.
+    // The vendor re-resolves the previewURL on every reconnect; a box that keeps
+    // using a dead URL forever stays "connecting" until the 30 min cache expiry.
+    // Call this when an open/read on the URL failed so the next attempt asks
+    // ISC for a fresh session (production does exactly this per reconnect).
+    static void invalidate(const std::string& isc_url) {
+        const std::string prefix = isc_url + "|";
+        std::lock_guard<std::mutex> lk(cache_mu_);
+        for (auto it = url_cache_.begin(); it != url_cache_.end();) {
+            if (it->first.rfind(prefix, 0) == 0)
+                it = url_cache_.erase(it);
+            else
+                ++it;
+        }
+    }
+
 private:
+    // previewURL cache: key = isc_url + "|" + protocol + "|" + streamType.
+    inline static std::mutex cache_mu_;
+    inline static std::unordered_map<std::string,
+                                     std::pair<std::string, int64_t>> url_cache_;
+
     static IscUrl parse(const std::string& url) {
         const std::string prefix = "isc://";
         if (url.rfind(prefix, 0) != 0) throw std::runtime_error("not an isc:// url");
