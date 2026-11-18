@@ -18,7 +18,7 @@
 
 #include "common.hpp"
 #include "task.hpp"
-#include <sail/tensor.h>
+#include "routeb/compat.hpp"
 
 namespace aidetect {
 

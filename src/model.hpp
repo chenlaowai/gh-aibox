@@ -6,9 +6,7 @@
 #include <dlfcn.h>
 
 #include "common.hpp"
-#include <sail/cvwrapper.h>
-#include <sail/engine.h>
-#include <sail/tensor.h>
+#include "routeb/compat.hpp"
 
 namespace aidetect {
 

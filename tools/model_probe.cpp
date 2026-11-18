@@ -9,9 +9,7 @@
 #include <string>
 #include <vector>
 #include <opencv2/opencv.hpp>
-#include <sail/cvwrapper.h>
-#include <sail/engine.h>
-#include <sail/tensor.h>
+#include "routeb/compat.hpp"
 
 static std::string shape_str(const std::vector<int>& s) {
     std::string o;
@@ -71,7 +69,7 @@ int main(int argc, char** argv) {
     pad.set_r(114); pad.set_g(114); pad.set_b(114);
     sail::BMImage resized = bmcv.crop_and_resize_padding(
         src, 0, 0, w, h, nw, nh, pad, bmcv_resize_algorithm::BMCV_INTER_LINEAR);
-    sail::BMImage pre(handle, nh, nw, FORMAT_RGB_PLANAR, DATA_TYPE_EXT_FLOAT32);
+    sail::BMImage pre(handle, nh, nw, FORMAT_BGR_PLANAR, DATA_TYPE_EXT_FLOAT32);
     bmcv.convert_to(resized, pre,
                     std::make_tuple(std::make_pair(alpha, beta),
                                     std::make_pair(alpha, beta),

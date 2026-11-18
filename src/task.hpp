@@ -24,7 +24,7 @@
 #include "decode_pool.hpp"
 #include "isc.hpp"
 #include "model.hpp"
-#include <sail/cvwrapper.h>
+#include "routeb/compat.hpp"
 #include <spawn.h>
 #include <sys/wait.h>
 #include <sys/socket.h>

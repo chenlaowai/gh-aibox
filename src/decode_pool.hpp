@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "common.hpp"
-#include <sail/decoder_multi.h>
+#include "routeb/compat.hpp"
 
 namespace aidetect {
 
