@@ -60,6 +60,22 @@ commit: -
      **新解析**的 RTSP URL 也 `Server returned 5XX`（0.5s 即返），属 ISC/相机侧。
      该结论用 fresh-URL 探测脚本固定（`.work/dev/_iscprobe.sh`/`_iscprobe2.sh`：HMAC 直连 Artemis，
      再 `docker exec aidetect ffmpeg -rtsp_transport tcp -i URL -t 1 -f null -`）。
+- **生产 dump4 参数实证（只读 DB，未改生产任何文件）**：`table_preference` 里
+  `VideoRecordSec=10`（5~30，默认 10）、`VideoRecordPrefix=0.500000`（回溯比例，10s×0.5=前 5s/后 5s）、
+  `VideoRecordLimitMB=20`、`EnableVideoRecord=1`、`Mp4RecorderEngine=0`；
+  `libEdgeSystem.so` 符号含 `libdump4::create_dump4_instance`、`MediaChannel::recordVideo`、
+  `TaskInstance::applyMp4Record`、`libdump4::dump_result`。→ 我方 `TsSegmentRecorder` 的
+  **pre5+post5、实测 9.68s** 与生产 dump4 的「总 10s、前后各半」一致；实现上仍用进程内 TS 环
+  （生产 libdump4 无公开头文件/ABI，直接绑定风险高）。
+- **rea 现状**：本机 `rea analyze` 对 aarch64 ELF 无可用 provider（ghidra P0 只收 PE/6502、
+  hopper 不支持 win32、ida/kuna 未配置，证据 `.work/rea_analyze_edge.json`）；生产侧逆向沿用
+  已提取的 `prod_edge_strings.txt` / `prod_syms_all.txt` / `edge_syms.txt` + 只读 sqlite。
+- **切换后稳定性采样（17:20~17:30）**：`restarts=0`、无 FATAL；RSS 1.19GB → **889MB**
+  （`malloc_trim` 周期回收，非单调增长）、fd 847~875、threads 272、CPU 稳态 **156~191%**
+  （采样瞬时峰值 350%，与告警密集时段重合，未逐线程归因）。
+  频道健康日志 `/data/CT/routeb_dev/health_1720.log`（60s 一条）显示 **31~33/36 ok** 波动：
+  固定 3 路 5XX，另有 14K/28K/钢栈桥偶发掉线后 **1 分钟内自愈**（ISC 会话抖动，非永久黑屏）；
+  两路新告警视频 674KB / 1.21MB。
 - **回滚**：`docker rm -f aidetect && docker rename aidetect_prev051 aidetect`，并把
   `bin/aidetect.pre051_20261118` 改名回 `bin/aidetect` 后 `docker start aidetect`（旧镜像
   `aidetect:current` 未动）。备份：`bin/container-aidetect-20261118.json`、`bin/aidetect.pre_routeb_20261118`。

@@ -53,8 +53,9 @@
 | 检测节奏 `frameInterval` | 按任务配置抽帧（默认 5 帧≈3fps） | 同名字段 | 一致 |
 | 告警阈值 `detectThreshold` | 每算法可配（如 0.8/0.9/0.4） | `people_*_threshold` 等 | 一致 |
 | ROI | 多边形 + 区域线，越界过滤 | 同 | 一致 |
-| 告警视频时长 | `video_duration`（默认 5s）+ 2s 余量，实测 7.02s | `dump4` pre/post（≈5+5s） | 语义一致 |
-| 告警视频编码 | H.264 / 1280×720（HEVC 源转码） | H.264 | 一致 |
+| 告警视频时长 | `video_duration`（默认 5s）+ 2s 余量 → 实测 **9.68s**（pre5+post5） | `VideoRecordSec=10` + `VideoRecordPrefix=0.5`（生产 DB `table_preference`，值 10 / 0.500000）→ **前 5s+后 5s** | **已对齐**（生产 dump4 同样是总 10s、前后各半） |
+| 告警视频编码 | H.264 / 1280×720（HEVC 源走 hevc 直拷；25K 704×576 HEVC 实测） | H.264（`Mp4RecorderEngine` 可切 0/1） | 编码跟随源，生产可转码 |
+| 告警视频体积限制 | 未限 | `VideoRecordLimitMB=20` | 待补 |
 | 告警冷却 | `cooldown_time`（默认 180s）+ 算法级 repeat | 同 | 一致 |
 | JPEG 质量 | OpenCV 默认（≈95） | 生产 `QualityOfPreview` 可配 | 我们不可配（待补） |
 | 预览分辨率 | ≤1920×1080（整数倍 VPP 缩放） | 原尺寸 / 1080p | 知情差异 |
