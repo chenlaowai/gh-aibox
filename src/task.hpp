@@ -2513,6 +2513,13 @@ private:
                         log_info(cfg_.task_id + " alarm gate open model=" +
                                  rt.spec->name + " gap_ms=" +
                                  std::to_string(report_gap));
+                        // The alarm image must show the confirmed (red) box and
+                        // its label; d.confirmed is assigned after this block,
+                        // so without this the evidence image carried the stale
+                        // pending/blue state (production draws red on alarm).
+                        d.confirmed = true;
+                        d.pending = false;
+                        d.suppress_label = false;
                         if (!file_source_) save_alarm(rt, dets, count, frame, bmcv);
                     }
                 }
@@ -2525,6 +2532,9 @@ private:
                 last_alarm_ms_ = now;
                 log_info(cfg_.task_id + " alarm gate open model=" + rt.spec->name +
                          " gap_ms=" + std::to_string(report_gap));
+                d.confirmed = true;
+                d.pending = false;
+                d.suppress_label = false;
                 if (!file_source_) save_alarm(rt, dets, count, frame, bmcv);
             }
             d.confirmed = st.confirmed;

@@ -10,6 +10,10 @@
 > dma-buf 对象 **1288~1342 稳定**、`bm_live_mb` **559~726**、restarts=0；
 > `hw_jpeg_ok=73/fail=0`（设备侧 JPEG）、`vpu_1/2=77~91/99~100`；新告警视频
 > **H.264/1280×720/8.98s/1.13MB**（pre 5s + post 5s，20MB 上限）。
+> **2026-11-19 01:32 迭代 104 最终构建复测**：10 分钟 soak（20 次采样）——
+> dmabuf 对象 **1304~1372 稳定**、`bm_live_mb` **565~806**、`hw_jpeg_ok=25/fail=0`、
+> `vpu_1/2=86~100`、RSS 974MB→trim 758~775MB、fd 848~888、32~33/36 ok、restarts=0、
+> `vdi/AllocateDecFrameBuffer` 错误 0；`docker stop -t 5` = **1447ms/exit 0**（优雅停机）。
 > 我方：`10.10.206.25`（aidetect，容器，`--network host`），36 路任务。
 > 生产：`10.10.207.46`（`./app`，宿主机 systemd），22 路任务；**全程只读**（ps/proc/sysfs/sqlite ro）。
 > 「—」= 该项未采集或不适用；「*」= 历史文档/Web 观测值。

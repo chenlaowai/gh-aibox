@@ -43,6 +43,19 @@ commit: -
   `5XX`（0.5s）；凤凰咀-游客中心/博物馆 fresh RTSP 分别 `5XX`（11.5s）与
   `Invalid data found`（21.7s），fresh RTMP 两路均 `Input/output error`（~18s）。
   两协议都失败 → ISC/相机侧，不是我们的重连/协议逻辑。
+- **告警图颜色修复**：`update_alarm()` 里 `d.confirmed/d.pending` 是在 gate-open 之后才赋值，
+  而 `save_alarm()` 在 gate 内调用，导致告警图用旧的 pending 状态画成**蓝框且无标签**。
+  现在 save 前把当前检测标为 confirmed/非 pending/不抑制标签；实测钢栈桥 `vest` 告警图
+  为**红框 + 红色「未穿反光衣」标签**（见 `.work/dev/falarm2.jpg`）。
+- **门控持久化复验**：01:19 重启日志 `alarm interval state loaded: **26 entries**`（文件随告警增长）。
+- **最终构建 10 分钟 soak（01:22~01:32，20 次采样）**：dmabuf 对象 **1304~1372 稳定**、
+  `bm_live_mb` **565~806 稳定**、`hw_jpeg_ok 6→25 / fail=0`、`vpu_1/2 86~100`、
+  RSS 974MB→1.0GB→trim 后 **758~775MB**、fd **848~888**、**32~33/36 ok**、
+  `restarts=0`、`vdi/AllocateDecFrameBuffer` 错误 **0**；CPU 采样 179~656%
+  （峰值来自告警转码/JPEG 突发）。
+- **视觉验收（最终构建）**：`all_2` 合流墙 1920×1080 九宫格（7 路实时 + 2 路状态瓦片，
+  ROI 绿线正常）；钢栈桥 `vest` 告警图 **红框 + 红色「未穿反光衣」标签**；
+  25K 单通道 704×576 预览 92~94KB、ROI 正常。
 
 ### 迭代 103 — 2026-11-18 — Web 预览全灭根因：僵尸容器 + stop_gateway 并发 join；设备内存 churn 收敛；生产对齐第一批（设备 JPEG/告警视频/遥测）
 
