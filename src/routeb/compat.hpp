@@ -92,17 +92,28 @@ inline int format_bpp(bm_image_format_ext f) {
     }
 }
 
+// One bm_handle per device for the whole process.  Tasks create short-lived
+// Handle objects (locals) while pooled BMImages outlive them; freeing device
+// memory through a handle that was already bm_dev_free'd crashed inside
+// libbmlib (bm_profile_record_mem_begin) during ~Task.  Keeping the device
+// handle alive for the process lifetime removes that class of crash.
+inline bm_handle_t shared_dev_handle(int dev_id) {
+    static std::mutex mu;
+    static std::map<int, bm_handle_t> handles;
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = handles.find(dev_id);
+    if (it != handles.end()) return it->second;
+    bm_handle_t h = nullptr;
+    if (bm_dev_request(&h, dev_id) != BM_SUCCESS)
+        throw std::runtime_error("sail compat: bm_dev_request failed");
+    handles[dev_id] = h;
+    return h;
+}
+
 class Handle {
 public:
-    explicit Handle(int dev_id = 0) {
-        if (bm_dev_request(&h_, dev_id) != BM_SUCCESS) {
-            h_ = nullptr;
-            throw std::runtime_error("sail compat: bm_dev_request failed");
-        }
-    }
-    ~Handle() {
-        if (h_) bm_dev_free(h_);
-    }
+    explicit Handle(int dev_id = 0) : h_(shared_dev_handle(dev_id)) {}
+    ~Handle() = default;  // shared for the process lifetime (see above)
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
     bm_handle_t data() const { return h_; }
@@ -416,6 +427,14 @@ public:
     }
 
     int image_copy_to(BMImage& in, BMImage& out, int x = 0, int y = 0) {
+        // bmcv_image_copy_to only blits packed formats; for planar images (the
+        // decoder output) a same-size VPP convert is the working equivalent.
+        // Without this, every channel <= 1080p lost its single preview because
+        // the copy silently failed and the preview was never queued.
+        const bool planar = in.format() == FORMAT_BGR_PLANAR || in.format() == FORMAT_RGB_PLANAR;
+        if (planar && x == 0 && y == 0 && in.width() == out.width() &&
+            in.height() == out.height() && in.format() == out.format())
+            return bmcv_image_vpp_convert(handle_, 1, in.data(), &out.data(), nullptr);
         if (!out.is_created()) {
             out = make_image(in.height(), in.width(), in.format(), in.dtype(),
                              align_up(in.width() * image_dtype_size(in.dtype()) * format_bpp(in.format()), 64));
@@ -617,12 +636,18 @@ public:
         bm_device_mem_t mem;
         if (bm_image_get_device_mem(img.data(), &mem) != BM_SUCCESS) return -1;
         if (!mat.isContinuous()) mat = mat.clone();
-        size_t n = std::min<size_t>(static_cast<size_t>(mat.total() * mat.elemSize()),
-                                bm_mem_get_device_size(mem));
-        return bm_memcpy_s2d_partial(h.data(), mem, mat.data, static_cast<unsigned int>(n)) ==
-                       BM_SUCCESS
-                   ? 0
-                   : -1;
+        // Device rows are stride-aligned, so one linear copy would skew the
+        // image (this produced the rainbow/garbled task-number badges).  Copy
+        // row by row honouring the device stride.
+        int stride = 0;
+        if (bm_image_get_stride(img.data(), &stride) != BM_SUCCESS) return -1;
+        int row_bytes = std::min(mat.cols * 3, stride);
+        for (int y = 0; y < mat.rows; ++y) {
+            if (bm_memcpy_s2d_partial_offset(h.data(), mem, mat.ptr(y), row_bytes,
+                                             static_cast<unsigned int>(y * stride)) != BM_SUCCESS)
+                return -1;
+        }
+        return 0;
     }
     static BMImage mat_to_bm_image(cv::Mat& mat) {
         BMImage img;
@@ -788,7 +813,11 @@ public:
         if (!bmrt_load_bmodel(rt_, path.c_str()))
             throw std::runtime_error("sail compat: load bmodel failed: " + path);
         int n = bmrt_get_network_number(rt_);
-        for (int i = 0; i < n; ++i) graphs_.push_back(bmrt_get_network_name(rt_, i));
+        // 0.5.1 has no bmrt_get_network_name(); the names array API exists in
+        // both 0.5.1 and 0.5.3 and is owned by the runtime.
+        const char** names = nullptr;
+        bmrt_get_network_names(rt_, &names);
+        for (int i = 0; names && i < n; ++i) graphs_.push_back(names[i]);
     }
     ~Engine() {
         if (rt_) bmrt_destroy(rt_);
@@ -911,6 +940,7 @@ public:
     Decoder& operator=(const Decoder&) = delete;
 
     bool is_opened() const { return opened_; }
+    std::string codec_name() const { return codec_name_; }
     bool is_eof() const { return eof_; }
 
     // Mirrors sail: {1, 3, h, w}
@@ -1009,6 +1039,7 @@ private:
         if (!cc_) return;
         avcodec_parameters_to_context(cc_, st->codecpar);
         cc_->thread_count = 1;
+        codec_name_ = dec->name ? dec->name : "?";
         if (avcodec_open2(cc_, dec, nullptr) < 0) {
             avcodec_free_context(&cc_);
             return;
@@ -1042,6 +1073,13 @@ private:
 
     int frame_to_image(Handle& h, BMImage& image) {
         AVFrame* f = frame_;
+        if (!diag_done_) {
+            diag_done_ = true;
+            fprintf(stderr, "[decoder] codec=%s fmt=%d %dx%d ls=%d,%d,%d,%d dev=%p,%p,%p,%p\n",
+                    codec_name_.c_str(), (int)f->format, f->width, f->height, f->linesize[0],
+                    f->linesize[4], f->linesize[5], f->linesize[6], (void*)f->data[0],
+                    (void*)f->data[4], (void*)f->data[5], (void*)f->data[6]);
+        }
         if (f->width <= 0 || f->height <= 0) return -1;
         int w = f->width, hh = f->height;
         width_ = w;
@@ -1120,6 +1158,8 @@ private:
     int width_ = 0, height_ = 0;
     bool opened_ = false;
     bool eof_ = false;
+    bool diag_done_ = false;
+    std::string codec_name_;
     int64_t deadline_ms_ = 0;
     BMImage nv12_;
     bool nv12_created_ = false;

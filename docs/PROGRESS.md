@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 100
+iteration: 101
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,31 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 101 — 2026-11-18 — 预览/告警配色/告警视频窗口修复；SDK 0.5.1 同步（运行时待重建镜像）
+
+- **预览空白（704x576 等 ≤1080p 通道）**：`image_copy_to` 用 `bmcv_image_copy_to`，该接口只支持 packed；
+  planar 输入时静默失败 → `maybe_preview` 提前返回，单通道/合流瓦片只剩状态卡。改为 planar+同尺寸时走
+  `bmcv_image_vpp_convert`，并给单通道预览加 CPU `render_jpeg` 兜底。25K 预览恢复（704x576 彩色）。
+- **任务编号/标签乱码**：`mat_to_bm_image` 把 CPU Mat 一次性线性拷进带 stride 的设备图，行错位 → 彩虹噪点。
+  改为按行 `bm_memcpy_s2d_partial_offset`。实测右上角「安全帽检测」清晰。
+- **黑白画面**：告警图走 `convert_format(BGR_PLANAR→BGR_PLANAR)`，VPP 把它当 YUV 转 → 掉色；
+  预览走 planar→packed 所以一直彩色。`to_mat` 改为统一走 packed 读回，25K 告警图恢复彩色。
+  （合流墙上仍呈灰度的相机确为黑白源。）
+- **告警视频窗口**：生产是告警帧前后各 ~5s。原来 `seg_rec_.clip(5, post)` 只取「过去 5s」且忽略 post。
+  改为告警时只登记窗口、等 post 秒后在 finalize 里拼「pre+post」；分段从 4s 改 2s。
+  实测 `ffprobe` = H.264 / 1280×720 / **10.83s**（原来 7.02s）。
+- **崩溃（资源/生命周期）**：`~Task` 释放池化 BMImage 时，分配它们的局部 `sail::Handle` 已 `bm_dev_free`，
+  在 libbmlib `bm_profile_record_mem_begin` 崩溃。改为**进程级共享 bm_handle**（永不释放）。
+  修复后连续运行 >17 分钟无崩溃（此前 2~4 分钟必崩）。
+- **依赖库同步（进行中）**：从 `reference/release/SDK-23.09-LTS-SP5` 取出 `libsophon_0.5.1-LTS_aarch64`
+  与 `sophon-mw-soc_0.14.0_aarch64`（生产是 0.5.1 + mw 0.10.0，0.10.0 不在官方包里，0.14.0 是同一 LTS 线最近版本），
+  已切到 0.5.1/0.14.0 头文件并通过编译（仅需把 `bmrt_get_network_name` 换成 `bmrt_get_network_names`）。
+  **运行时混用失败**：把 0.14 库放 `/opt/bin/sdk` 用 DT_RPATH 覆盖容器 `LD_LIBRARY_PATH` 后，
+  与容器内 0.15 的 OpenCV/FreeType 混用导致启动即 abort（SIGABRT，崩溃循环）。
+  已回退（把 `/opt/bin/sdk` 改名禁用），服务恢复。**下一步：整镜像替换 `/opt/sophon-sdk` 为 0.5.1+0.14，而不是混挂库**。
+- **ISC 25K/龙港**：25K 已恢复画面（预览修复）；龙港钢栈桥仍间歇 `ingest bridge no video: Input/output error`，
+  与生产的 ISC 重连/会话复用逻辑差异待逆向对齐（rea）。
+
 ### 迭代 100 — 2026-11-18 — 预览/合流空白与 ROI 线修复：packed stride 与设备侧画线
 
 - **现象（用户反馈）**：合流墙与单通道预览没有画面；部分画面黑白；配置区域线（ROI）没画对。

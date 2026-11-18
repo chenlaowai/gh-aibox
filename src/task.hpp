@@ -610,7 +610,11 @@ private:
         return rt.spec ? rt.spec->report_content : std::string();
     }
     struct PendingVideo {
-        bool active = false;
+    bool active = false;
+    bool from_segments = false;   // alarm clip assembled from the TS ring
+    bool seg_done = false;
+    int seg_pre = 5;
+    int seg_post = 5;
         std::string tmp_path;
         std::string final_path;
         Json report;
@@ -2061,9 +2065,16 @@ private:
         }
         return out;
     }    cv::Mat to_mat(sail::BMImage& frame, sail::Bmcv& bmcv) {
-        sail::BMImage bgr = bmcv.convert_format(frame, FORMAT_BGR_PLANAR);
+        // Read through the packed layout: planar->packed VPP is the path the
+        // (colour-correct) preview tiles use, while the old planar->planar
+        // convert came back desaturated in alarm images.
         cv::Mat mat;
-        sail::Bmcv::bm_image_to_mat(bgr, mat);
+        if (frame.format() == FORMAT_BGR_PACKED) {
+            sail::Bmcv::bm_image_to_mat(frame, mat);
+        } else {
+            sail::BMImage bgr = bmcv.vpp_convert_format(frame, FORMAT_BGR_PACKED);
+            sail::Bmcv::bm_image_to_mat(bgr, mat);
+        }
         return mat.clone();
     }
     void draw_roi_cv(cv::Mat& canvas) {
@@ -3681,6 +3692,18 @@ private:
                     auto jpeg = any_pending
                         ? render_jpeg(*frame, bmcv, sz.w, sz.h, dets)
                         : render_preview_fast(*frame, bmcv, sz.w, sz.h, dets);
+                    if (jpeg.empty()) {
+                        // Some source geometries make the device-side render return empty;
+                        // fall back to the CPU renderer (same as alarm images) so the
+                        // preview never goes dark.
+                        jpeg = render_jpeg(*frame, bmcv, sz.w, sz.h, dets);
+                        if (!jpeg.empty() && !preview_fallback_logged_) {
+                            preview_fallback_logged_ = true;
+                            log_warn(cfg_.task_id + " preview fast path empty -> CPU render " +
+                                     std::to_string(frame->width()) + "x" +
+                                     std::to_string(frame->height()));
+                        }
+                    }
                     if (!jpeg.empty()) {
                         {
                             std::lock_guard<std::mutex> lk(jpeg_mutex_);
@@ -4167,7 +4190,9 @@ private:
                      std::to_string(p_dec) + "/" + std::to_string(p_rec));
             const std::string seg_dir = app_.tmp_root + "/" + cfg_.task_id + "/segs";
             ensure_dir(seg_dir);
-            seg_rec_.start(p_rec, seg_dir, 4, 6);
+            // 2 s segments: a 10 s pre+post clip then spans ~5 segments and lands at
+            // about 10 s instead of quantising to 5 s boundaries.
+            seg_rec_.start(p_rec, seg_dir, 2, 12);
             return true;
         }
         pid_t pid = fork();
@@ -4549,15 +4574,19 @@ private:
         // keeps the last seconds of encoded packets and writes them to a TS
         // clip, so no URL re-open and no wall-clock <-> PTS mapping is needed.
         if (rc != 0 && seg_rec_.segment_count() > 0) {
-            const std::string seg_ts = pending_.tmp_path + ".ts";
-            size_t bytes = seg_rec_.clip(5, post, seg_ts);
-            if (bytes > 0) {
-                rc = 0;
-                async_dump = true;
-                log_info(cfg_.task_id + " segment clip started bytes=" +
-                         std::to_string(bytes) + " segs=" +
-                         std::to_string(seg_rec_.segment_count()));
-            }
+            // Production keeps ~5 s before and after the alarm frame.  The TS
+            // ring is rolling, so do not cut the clip now: remember the window
+            // and assemble it in finalize_video() after the post seconds were
+            // actually recorded.
+            pending_.from_segments = true;
+            pending_.seg_pre = 5;
+            pending_.seg_post = post;
+            pending_.ready_ms = now_ms() + static_cast<int64_t>(post) * 1000;
+            rc = 0;
+            async_dump = true;
+            log_info(cfg_.task_id + " segment clip scheduled pre=5 post=" +
+                     std::to_string(post) + " segs=" +
+                     std::to_string(seg_rec_.segment_count()));
         }
         if (rc != 0 && use_multi_)
             rc = decode_pool_.dump(group_, slot_, 5, post, pending_.tmp_path);
@@ -4665,6 +4694,17 @@ private:
     void finalize_video(bool force) {
         if (!pending_.active) return;
         if (!force && now_ms() < pending_.ready_ms) return;
+        if (pending_.from_segments && !pending_.seg_done) {
+            pending_.seg_done = true;
+            const std::string seg_ts = pending_.tmp_path + ".ts";
+            size_t bytes = seg_rec_.clip(pending_.seg_pre, pending_.seg_post, seg_ts);
+            log_info(cfg_.task_id + " segment clip written bytes=" + std::to_string(bytes) +
+                     " window=" + std::to_string(pending_.seg_pre + pending_.seg_post) + "s");
+            if (bytes == 0) {
+                std::error_code ec;
+                std::filesystem::remove(seg_ts, ec);
+            }
+        }
         bool ok = false;
         // The ring writer can publish the file just after request_clip()
         // returns on a busy box; retry briefly before declaring it missing.
@@ -4753,6 +4793,7 @@ private:
     DemandCallback want_tile_;
     AlarmCallback alarm_cb_;
     bool no_preview_ = false;
+    bool preview_fallback_logged_ = false;
     std::vector<std::unique_ptr<ModelRuntime>> models_;
     std::thread thread_;
     std::thread infer_thread_;

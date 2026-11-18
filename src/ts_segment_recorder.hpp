@@ -78,7 +78,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         if (file_.is_open()) file_.flush();
         const int64_t now = now_ms();
-        const int64_t from = now - static_cast<int64_t>(std::max(1, pre_s)) * 1000;
+        const int64_t from = now - static_cast<int64_t>(std::max(1, pre_s) + std::max(0, post_s)) * 1000;
         std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) return 0;
         size_t total = 0;

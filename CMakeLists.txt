@@ -46,11 +46,11 @@ target_link_libraries(aidetect PRIVATE
     dl
 )
 
-target_link_options(aidetect PRIVATE -rdynamic)
+target_link_options(aidetect PRIVATE -rdynamic -Wl,--disable-new-dtags)
 
 set_target_properties(aidetect PROPERTIES
-    BUILD_RPATH "${LIBSOPHON_HOME}/lib;${FFMPEG_HOME}/lib;${OPENCV_HOME}/lib"
-    INSTALL_RPATH "${LIBSOPHON_HOME}/lib;${FFMPEG_HOME}/lib;${OPENCV_HOME}/lib"
+    BUILD_RPATH "${LIBSOPHON_HOME}/lib;${FFMPEG_HOME}/lib;${OPENCV_HOME}/lib;/opt/bin/sdk/libsophon/lib;/opt/bin/sdk/ffmpeg/lib;/opt/bin/sdk/opencv/lib"
+    INSTALL_RPATH "${LIBSOPHON_HOME}/lib;${FFMPEG_HOME}/lib;${OPENCV_HOME}/lib;/opt/bin/sdk/libsophon/lib;/opt/bin/sdk/ffmpeg/lib;/opt/bin/sdk/opencv/lib"
 )
 
 add_executable(model_probe tools/model_probe.cpp)
