@@ -816,7 +816,7 @@ private:
         }
     }
     void run_single() {
-        std::unique_ptr<sail::Decoder> decoder_holder;
+        std::shared_ptr<sail::Decoder> decoder_holder;
         try {
             sail::Handle handle(0);
             sail::Bmcv bmcv(handle);
@@ -868,8 +868,8 @@ private:
                 }
                 try {
                     std::lock_guard<std::mutex> hw(decode_hw_mutex());
-                    decoder_holder = std::make_unique<sail::Decoder>(source_url_, true, 0);
-                    decoder_ = decoder_holder.get();
+                    decoder_holder = std::make_shared<sail::Decoder>(source_url_, true, 0);
+                    decoder_ = decoder_holder;
                     if (decoder_->is_opened()) {
                         open_fail_count_ = 0;
                         break;
@@ -888,7 +888,7 @@ private:
                     }
                     set_stream_error(std::string("decoder open: ") + e.what());
                     decoder_holder.reset();
-                    decoder_ = nullptr;
+                    decoder_.reset();
                 }
                 ++open_fail_count_;
                 publish_status("正在连接监控视频流...");
@@ -944,12 +944,8 @@ private:
                     ++fail_count;
                     publish_status("正在重连监控视频流...");
                     if (fail_count >= 5) {
-                        if (dumped_ && decoder_holder) {
-                            decoder_holder.release();
-                        } else if (decoder_holder) {
-                            decoder_holder.reset();
-                        }
-                        decoder_ = nullptr;
+                        decoder_holder.reset();
+                        decoder_.reset();
                         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
                         bool gateway_ok = true;
                         // ISC URLs are single-use: resolve() is called on every attempt and
@@ -978,9 +974,9 @@ private:
                         restart_recorder();
                         try {
                             std::lock_guard<std::mutex> hw(decode_hw_mutex());
-                            decoder_holder = std::make_unique<sail::Decoder>(source_url_, true, 0);
+                            decoder_holder = std::make_shared<sail::Decoder>(source_url_, true, 0);
                             if (decoder_holder->is_opened()) {
-                                decoder_ = decoder_holder.get();
+                                decoder_ = decoder_holder;
                                 if (!no_dump_env())
                                     decoder_->enable_dump(
                                         std::max(12, cfg_.video_duration + 2));
@@ -988,12 +984,12 @@ private:
                                 log_info(cfg_.task_id + " decoder reconnected");
                                 publish_status("监控视频流已恢复");
                             } else {
-                                decoder_ = nullptr;
+                                decoder_.reset();
                                 if (isc_source) ++isc_rot_;
                                 publish_status("重连失败，继续重试");
                             }
                         } catch (const std::exception& e) {
-                            decoder_ = nullptr;
+                            decoder_.reset();
                             if (isc_source) ++isc_rot_;
                             publish_status(std::string("重连失败: ") + e.what());
                         }
@@ -1006,8 +1002,8 @@ private:
                 if (reconnect_requested_.exchange(false)) {
                     // Stream preference changed: drop the decoder so the outer
                     // loop reopens with the new URL (main <-> sub).
-                    if (decoder_holder) decoder_holder.reset();
-                    decoder_ = nullptr;
+                    decoder_holder.reset();
+                    decoder_.reset();
                     break;
                 }
             }
@@ -1019,14 +1015,14 @@ private:
                 }
             }
             finalize_video(true);
-            if (dumped_ && decoder_holder) decoder_holder.release();
-            decoder_ = nullptr;
+            decoder_holder.reset();
+            decoder_.reset();
             log_info(cfg_.task_id + " task stopped");
         } catch (const std::exception& e) {
             failed_ = true;
             error_ = e.what();
-            if (dumped_ && decoder_holder) decoder_holder.release();
-            decoder_ = nullptr;
+            decoder_holder.reset();
+            decoder_.reset();
             log_error(cfg_.task_id + " task exception: " + error_);
         }
         running_ = false;
@@ -4874,7 +4870,7 @@ private:
     std::string stream_status_ = "正在连接监控视频流...";
     bool rect_warned_ = false;
     bool plate_warned_ = false;
-    sail::Decoder* decoder_ = nullptr;
+    std::shared_ptr<sail::Decoder> decoder_;
     bool dumped_ = false;
     int64_t last_status_ms_ = 0;
     std::atomic<int64_t> last_frame_ms_{0};

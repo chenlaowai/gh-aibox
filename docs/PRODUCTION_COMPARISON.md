@@ -74,3 +74,19 @@ PTS 节奏控制（之前 14 路 MP4 测试源以磁盘速度解码，白烧 5 �
   推理 0.13 ms/帧；集成后目标是把单路 CPU 从 7.4% 压到 2% 量级。
 
 详见 `tools/routeb_poc/README.md` 与 `docs/PROGRESS.md` 迭代 98。
+## 6. 路线 B 落地后的资源对比（2026-11-18，36 路，盒子 10.10.206.25）
+
+| 指标 | 旧（sail，软件解码） | 新（route B，VPU 硬解） |
+|---|---|---|
+| CPU | 266~294% | **146~173%** |
+| dmabuf fd | 500~660 | **290** |
+| RSS | 926 MB | ~890 MB（trim 前） |
+| 线程 | 268~339 | 271~273 |
+| 解码 | 软件 `h264`（35.59 ms/帧） | `h264_bm`/`hevc_bm`（3.25 ms/帧） |
+| 推理 | `sail::Engine`（sail 封装） | `bmrt_launch_tensor_ex` 直调 |
+| 库依赖 | libsail.so | **无**（只 bmcv/bmrt/bmlib/ffmpeg） |
+
+- 告警链路抽检：20 分钟 57 张 JPG、53 个 MP4；`ffprobe` = H.264 / 1280×720 / 7.02s。
+- 合流墙 `all_3` 1920×1080 九宫格、单通道预览均经 WS 抓帧确认实时画面。
+- 已知代价：集成中修掉 4 个 bmcv 语义 bug（stride 数组、缺 alloc、d2s 越界、
+  packed→planar），并修掉 `decoder_` 悬垂指针导致的偶发崩溃（改 shared_ptr）。

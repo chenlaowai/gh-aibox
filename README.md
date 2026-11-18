@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 98
+iteration: 99
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,13 @@ commit: -
 一句话定位：把原先 Python 写的 BM1684X AI 检测服务端用 C++ 重写并 Docker 化；当前已是**可运行的 MVP+**：5 类模型、ISC、告警 5+5 视频、多实例调度、36 路压测、硬件加速合流、Docker/Compose 均已跑通；实时预览已按生产方案重构为**按需渲染 + 真内容 10fps + 1080p 只缩不放**。
 
 ## 当前状态
+
+- **2026-11-18 路线 B 已落地（迭代 99）**：新增 `src/routeb/compat.hpp`，用
+  `bmcv_*` + `bmrt_*` + sophon-ffmpeg **替换掉 sail**（`ldd` 无 `libsail.so`，调用点未改）。
+  解码改 VPU `h264_bm`/`hevc_bm`、推理改 `bmrt_launch_tensor_ex`、图像改 bmcv。
+  实测 36 路：CPU **146~173%**（旧实现 266~294%）、dmabuf **290**（旧 500+）、
+  30 秒 394~425 条 detect round、告警图片/MP4 正常（ffprobe H.264/1280×720/7.02s）、
+  合流墙与单通道预览有画面。旧二进制备份在 `bin/aidetect.pre_routeb_20261118`。
 
 - **2026-11-18 路线 B PoC（迭代 98）**：`tools/routeb_poc/` 用 **sophon-ffmpeg VPU 硬解
   （`h264_bm`/`hevc_bm`）+ `bmcv_*` + `bmrt_*`** 跑通「解码→缩放/归一化→推理→画框→JPEG」，
@@ -308,6 +315,12 @@ commit: -
   - 镜像 902 MB，基于本地 `aibox-api:latest`（Debian 12）+ 拷贝 OpenSSL 1.1。
 
 ## 下一步
+
+0. **观察路线 B 稳定性**：当前 `decoder_` 已改 `shared_ptr`，需连续观察 ≥24h
+   （崩溃/僵尸重启、RSS、dmabuf、重连次数）；`get_tpu_util`/`get_vpu_util` 暂时返回 0
+   （可以接 `/proc/jpuinfo` 或 bm 驱动接口补齐，仅影响 `/get_occupancy` 展示）。
+   设备侧 JPEG（`bmcv_image_jpeg_enc`，只吃 NV12）可作为下一步 CPU 优化项：
+   现在 `imencode` 仍是 `bm_image_to_mat` + `cv::imencode`。
 
 0. **路线 B 全量替换**（当前最高优先级）：按 PoC 结论分两步改主程序——
    ① `src/model.hpp`：`sail::Engine`/`Tensor` → `bmrt_load_bmodel`/`bmrt_launch_tensor_ex`

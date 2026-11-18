@@ -10,6 +10,27 @@ commit: -
 
 ## 已知缺陷
 
+### KI-042 路线 B（bmcv 直调）集成期的 5 个坑（已修，留作教训）
+
+1. **`bm_image_create` 的 stride 是「每平面一个」**：三平面 `FORMAT_BGR_PLANAR` 只传
+   一个 `int*` 会让驱动读到垃圾 stride，报
+   `ASSERT stride_width ... W_stride=640, W=1920`。必须传 `int st[3]`。
+2. **新建 bm_image 必须 `bm_image_alloc_contiguous_mem_heap_mask(1,&img,6)`**，
+   否则送 `vpp_convert` 的输出不对（甚至挂）。
+3. **`bm_memcpy_d2s` 按整块连续内存大小拷贝**：`bm_image_get_device_mem` 返回的
+   mem.size 可能是整个多平面分配，拿单平面大小的宿主缓冲接就会堆溢出
+   （表现为 `malloc(): invalid size (unsorted)`，崩在 `render_jpeg`）。
+   一律用 `bm_memcpy_d2s_partial(..., min(dev_size, buf_size))`。
+4. **packed 输入经 `crop_and_resize*` 后要输出 planar（BGR_PLANAR）**，与 sail 一致；
+   否则下游 `convert_to` 的通道图式不匹配，推理输入是垃圾。
+5. **`decoder_` 悬垂**：`run_single` 里 holder 是局部 `unique_ptr`、`decoder_` 是成员裸指针，
+   ISC 重连风暴时 `reset()/release()` 与 `decoder_->read()` 竞争 → 约 2~4 分钟一次
+   `pthread_mutex_lock` 崩溃。已把两者都改成 `std::shared_ptr`。
+
+部署侧：`cp` 覆盖运行中的二进制会 `Text file busy`，要用 `cp .new` + `mv -f`（rename）；
+进程是 root，`kill -9` 需要 `sudo`；崩溃后容器 PID1 常变僵尸（`docker ps` 仍 Up、
+进程 Z、kill 无效），只能重启盒子。
+
 ### KI-041 设备侧 JPEG 编码只接受 NV12（bmcv_image_jpeg_enc）
 
 - 现象：`bmcv_image_jpeg_enc` 传 `FORMAT_BGR_PACKED` 或 `FORMAT_BGR_PLANAR` 都返回

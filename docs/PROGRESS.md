@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 98
+iteration: 99
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,39 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 99 — 2026-11-18 — 路线 B 落地：删掉 sail，vm 二进制只链 bmcv/bmrt/sophon-ffmpeg
+
+- **交付**：新增 `src/routeb/compat.hpp`（约 1000 行），在 `namespace sail` 里用
+  `bm_image_*`/`bmcv_*`/`bmrt_*`/sophon-ffmpeg 实现现有代码用到的
+  `Handle`/`BMImage`/`Bmcv`/`PaddingAtrr`/`Tensor`/`Engine`/`Decoder`/`MultiDecoder`，
+  6 个源文件只改 `#include`，121 处调用点**未改**；`CMakeLists.txt` 去掉 `sail` 链接。
+  `ldd build/aidetect/aidetect | grep sail` 为空（实测无 `libsail.so`）。
+- **集成期修掉的 4 个真 bug**（都是 sail 语义差异导致的）：
+  1. `bm_image_create` 的 `stride` 参数是**每平面一个**，三平面 BGR 传单值指针会让
+     VPU 读到垃圾 stride → 驱动 ASSERT（`W_stride=640, W=1920`）。改为按平面数组。
+  2. 新建的 `bm_image` 没 `bm_image_alloc_contiguous_mem_heap_mask` 就送 vpp →
+     输出异常；统一走 `make_image()`（create + allocate）。
+  3. `bm_memcpy_d2s` 按**整块连续内存**大小拷贝，而宿主机缓冲按单平面分配 →
+     堆溢出（`malloc(): invalid size (unsorted)`，崩在 `render_jpeg`）。
+     改为 `bm_memcpy_d2s_partial` + `bm_mem_get_device_size` 取 min。
+  4. `crop_and_resize*` 对 packed 输入要产出 planar（sail 行为），否则下游
+     `convert_to` 的通道/图式不匹配。
+- **又一个崩溃（read 里的 pthread_mutex_lock）**：`run_single` 里 `decoder_holder`
+  是函数局部 `unique_ptr`、`decoder_` 是成员裸指针，`release()/reset()` 与
+  `decoder_->read()` 之间存在悬垂窗口（ISC 重连风暴时高频触发，约 2~4 分钟一次）。
+  已把 `decoder_holder`/`decoder_` 都改成 `std::shared_ptr`，重启后 3 分钟无崩溃。
+- **部署**：`cp` 会 `Text file busy`，必须 `cp 到 .new` + `mv -f`（rename）再
+  `sudo kill -9`（进程是 root，linaro 直接 kill 无效）。两次崩溃都让容器 PID1 变僵尸
+  （`docker ps` 仍 Up、进程 Z 状态、`kill -9` 无效），只能重启盒子恢复（各约 4 分钟）。
+- **验证（重启后 3 分钟，36 路）**：`restarts=0`、崩溃 0、**30 秒 394 条 detect round**、
+  CPU **146%**、RSS 890MB（trim 前）、线程 271、fd 1312、dmabuf **290**（旧实现 500+）；
+  告警图片 20 分钟 57 张、告警 MP4 53 个，抽检 `ffprobe`：H.264 / 1280×720 / 7.02s / 898KB；
+  合流墙 `all_3`（1920×1080 九宫格）与单通道预览经 WS 抓帧确认有实时画面；
+  HEVC 2560×1440 通道 10 分钟 2350 次 detect round（硬解正常）。
+- **回滚**：旧二进制保留在 `/data/CT/project/ai/bin/aidetect.pre_routeb_20261118`；
+  本地分支 `route-b-bmrt`（不推送）。
+
 
 ### 迭代 98 — 2026-11-18 — 路线 B PoC 跑通：VPU 硬解 CPU 降 10.9 倍，全链路无 sail
 
