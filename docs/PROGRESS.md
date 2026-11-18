@@ -2638,3 +2638,8 @@ commit: -
 - 验证：`pwsh -File <skill>/scripts/check-project-memory.ps1 -Target . -DocsRoot docs` → 通过，退出码 0
 - 遗留：README 的定位/技术栈、REQUIREMENTS 的 FR/AC、CONVENTIONS 的命令表仍需按实际项目填写
 - 下轮建议：先补 `CONVENTIONS` 的命令表（能跑通才算项目真的存在），再补 `REQUIREMENTS`
+### 迭代 99 佐证
+
+- `docs/assets/routeb_merge_all1.jpg`：路线 B 运行中 WS 抓取的 `all_1` 合流墙（1920×1080）。
+- `docs/assets/routeb_alarm_14k.jpg`：路线 B 生成的告警图（淮河航道 14K，含红框/中文标签/绿色 ROI）。
+- `tools/routeb_poc/README.md` 的 PoC 数据与 `docs/assets/routeb_poc_frame.jpg` 为硬解链路证据。
