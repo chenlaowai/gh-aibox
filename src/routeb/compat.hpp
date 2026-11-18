@@ -81,6 +81,17 @@ inline int shape_count(const std::vector<int>& s) {
 }
 inline int align_up(int v, int a) { return (v + a - 1) / a * a; }
 
+// Bytes per pixel of one row for a bm_image format (packed BGR/RGB is 3).
+inline int format_bpp(bm_image_format_ext f) {
+    switch (f) {
+        case FORMAT_BGR_PACKED:
+        case FORMAT_RGB_PACKED:
+            return 3;
+        default:
+            return 1;
+    }
+}
+
 class Handle {
 public:
     explicit Handle(int dev_id = 0) {
@@ -263,7 +274,8 @@ public:
     int convert_format(BMImage& in, BMImage& out, bm_image_format_ext fmt) {
         if (!out.is_created() || out.width() != in.width() || out.height() != in.height() ||
             out.format() != fmt)
-            out = make_image(in.height(), in.width(), fmt, in.dtype(), align_up(in.width() * image_dtype_size(in.dtype()), 64));
+            out = make_image(in.height(), in.width(), fmt, in.dtype(),
+                             align_up(in.width() * format_bpp(fmt) * image_dtype_size(in.dtype()), 64));
         return bmcv_image_vpp_convert(handle_, 1, in.data(), &out.data(), nullptr);
     }
     BMImage convert_format(BMImage& in, bm_image_format_ext fmt = FORMAT_BGR_PLANAR) {
@@ -285,12 +297,13 @@ public:
                         int rh, bmcv_resize_algorithm alg = BMCV_INTER_NEAREST) {
         if (!out.is_created() || out.width() != rw || out.height() != rh) {
             int ds = image_dtype_size(in.dtype());
-            int stride = align_up(rw * ds, 64);
+            int stride = 0;  // set once ofmt is known
             // sail semantics: packed inputs produce a planar (BGR) output, so
             // downstream convert_to/draw see a stable layout.
             bm_image_format_ext ofmt = in.format();
             if (ofmt != FORMAT_BGR_PLANAR && ofmt != FORMAT_RGB_PLANAR && ofmt != FORMAT_GRAY)
                 ofmt = FORMAT_BGR_PLANAR;
+            stride = align_up(rw * ds * format_bpp(ofmt), 64);
             out = make_image(rh, rw, ofmt, in.dtype(), stride);
         }
         bmcv_rect_t rect = {static_cast<unsigned short>(cx), static_cast<unsigned short>(cy),
@@ -327,12 +340,13 @@ public:
                                     bmcv_resize_algorithm alg = BMCV_INTER_NEAREST) {
         if (!out.is_created() || out.width() != rw || out.height() != rh) {
             int ds = image_dtype_size(in.dtype());
-            int stride = align_up(rw * ds, 64);
+            int stride = 0;  // set once ofmt is known
             // sail semantics: packed inputs produce a planar (BGR) output, so
             // downstream convert_to/draw see a stable layout.
             bm_image_format_ext ofmt = in.format();
             if (ofmt != FORMAT_BGR_PLANAR && ofmt != FORMAT_RGB_PLANAR && ofmt != FORMAT_GRAY)
                 ofmt = FORMAT_BGR_PLANAR;
+            stride = align_up(rw * ds * format_bpp(ofmt), 64);
             out = make_image(rh, rw, ofmt, in.dtype(), stride);
         }
         bmcv_padding_atrr_t p{};
@@ -404,7 +418,7 @@ public:
     int image_copy_to(BMImage& in, BMImage& out, int x = 0, int y = 0) {
         if (!out.is_created()) {
             out = make_image(in.height(), in.width(), in.format(), in.dtype(),
-                             align_up(in.width() * image_dtype_size(in.dtype()), 64));
+                             align_up(in.width() * image_dtype_size(in.dtype()) * format_bpp(in.format()), 64));
         }
         bmcv_copy_to_atrr_t attr{};
         attr.start_x = x;
@@ -443,53 +457,61 @@ public:
                                          static_cast<unsigned char>(std::get<1>(color)),
                                          static_cast<unsigned char>(std::get<0>(color)));
     }
+    // Draw ROI polygons.  bmcv has no line primitive and draw_point /
+    // multi-rect batching on packed images silently did nothing here, so draw
+    // on the CPU mat (same path the alarm renderer uses, which works) and copy
+    // the rows back into the device image with per-row offsets (device stride
+    // can be larger than w*bpp).
     int polylines(BMImage& img, std::vector<std::vector<std::pair<int, int>>>& pts,
                   bool closed, std::tuple<unsigned char, unsigned char, unsigned char> color,
                   int thickness = 1, int shift = 0) {
         (void)shift;
-        int rc = 0;
+        if (!img.is_created()) return -1;
+        if (img.format() != FORMAT_BGR_PACKED && img.format() != FORMAT_RGB_PACKED &&
+            img.format() != FORMAT_BGR_PLANAR && img.format() != FORMAT_RGB_PLANAR)
+            return -1;
+        cv::Mat mat;
+        if (bm_image_to_mat(img, mat) != 0 || mat.empty()) return -1;
+        std::vector<std::vector<cv::Point>> polys;
+        polys.reserve(pts.size());
         for (auto& poly : pts) {
-            if (poly.size() < 2) continue;
-            for (size_t i = 0; i + 1 < poly.size(); ++i) {
-                bmcv_rect_t r{};
-                int x0 = poly[i].first, y0 = poly[i].second;
-                int x1 = poly[i + 1].first, y1 = poly[i + 1].second;
-                // bmcv only has rectangles: approximate a segment with a thin rect
-                if (x0 == x1) {
-                    r = {static_cast<unsigned short>(x0),
-                         static_cast<unsigned short>(std::min(y0, y1)),
-                         static_cast<unsigned short>(std::max(1, thickness)),
-                         static_cast<unsigned short>(std::abs(y1 - y0))};
-                } else if (y0 == y1) {
-                    r = {static_cast<unsigned short>(std::min(x0, x1)),
-                         static_cast<unsigned short>(y0),
-                         static_cast<unsigned short>(std::abs(x1 - x0)),
-                         static_cast<unsigned short>(std::max(1, thickness))};
-                } else {
-                    continue;  // diagonal edges are drawn on the CPU path only
-                }
-                rc |= bmcv_image_draw_rectangle(handle_, img.data(), 1, &r,
-                                                std::max(1, thickness), std::get<2>(color),
-                                                std::get<1>(color), std::get<0>(color));
-            }
-            if (closed && poly.size() > 2) {
-                bmcv_rect_t r{};
-                int x0 = poly.back().first, y0 = poly.back().second;
-                int x1 = poly.front().first, y1 = poly.front().second;
-                if (x0 == x1 || y0 == y1) {
-                    r = {static_cast<unsigned short>(std::min(x0, x1)),
-                         static_cast<unsigned short>(std::min(y0, y1)),
-                         static_cast<unsigned short>(std::max(1, std::abs(x1 - x0))),
-                         static_cast<unsigned short>(std::max(1, std::abs(y1 - y0)))};
-                    rc |= bmcv_image_draw_rectangle(handle_, img.data(), 1, &r,
-                                                    std::max(1, thickness), std::get<2>(color),
-                                                    std::get<1>(color), std::get<0>(color));
-                }
-            }
+            std::vector<cv::Point> p;
+            p.reserve(poly.size());
+            for (auto& q : poly) p.emplace_back(q.first, q.second);
+            if (p.size() >= 2) polys.push_back(std::move(p));
         }
-        return rc;
+        if (polys.empty()) return -1;
+        // tuple is (B,G,R) like the rest of this compat layer
+        cv::polylines(mat, polys, closed, cv::Scalar(std::get<0>(color), std::get<1>(color),
+                                                    std::get<2>(color)),
+                      std::max(1, thickness), cv::LINE_AA);
+        // Upload row by row honouring the device stride.
+        bm_handle_t h = bm_image_get_handle(&img.data());
+        int planes = std::max(1, bm_image_get_plane_num(img.data()));
+        std::vector<bm_device_mem_t> mem(planes);
+        std::vector<int> stride(planes, 0);
+        if (bm_image_get_device_mem(img.data(), mem.data()) != BM_SUCCESS) return -1;
+        if (bm_image_get_stride(img.data(), stride.data()) != BM_SUCCESS) return -1;
+        int rows = mat.rows, cols = mat.cols;
+        int bpp = (img.format() == FORMAT_BGR_PACKED || img.format() == FORMAT_RGB_PACKED)
+                      ? (cols * 3)
+                      : cols;
+        if (img.format() == FORMAT_BGR_PLANAR || img.format() == FORMAT_RGB_PLANAR) {
+            std::vector<cv::Mat> ch;
+            cv::split(mat, ch);
+            for (int p = 0; p < std::min(3, planes); ++p)
+                for (int y = 0; y < rows; ++y)
+                    bm_memcpy_s2d_partial_offset(h, mem[p], ch[p].ptr(y), cols,
+                                                 static_cast<unsigned int>(y * stride[p]));
+            return 0;
+        }
+        int plane = std::min(planes - 1, 0);
+        int row_bytes = std::min(bpp, stride[plane]);
+        for (int y = 0; y < rows; ++y)
+            bm_memcpy_s2d_partial_offset(h, mem[plane], mat.ptr(y), row_bytes,
+                                         static_cast<unsigned int>(y * stride[plane]));
+        return 0;
     }
-
     bool imencode(std::string& ext, BMImage& img, std::vector<unsigned char>& buf) {
         cv::Mat mat;
         if (bm_image_to_mat(img, mat) != 0 || mat.empty()) return false;
@@ -1246,23 +1268,30 @@ private:
 // ---------------------------------------------------------------- telemetry
 inline int get_dev_id(int dev_id) { return dev_id; }
 
-inline int get_tpu_util(int dev_id) {
-    (void)dev_id;
-    // /proc/jpuinfo is often not readable inside the container; telemetry only.
+inline int read_jpu_usage() {
+    // /proc/jpuinfo exposes per-core "usage(short|long)": N% entries; the
+    // service only needs one aggregate number for /get_occupancy.
     FILE* f = fopen("/proc/jpuinfo", "r");
     if (!f) return 0;
-    char line[256];
-    int util = 0;
+    char line[1024];
+    int best = 0;
     while (fgets(line, sizeof(line), f)) {
-        int v = 0;
-        if (sscanf(line, "usage: %d", &v) == 1) util = v;
+        const char* p = strstr(line, "usage");
+        if (!p) continue;
+        while (*p && (*p < '0' || *p > '9')) ++p;
+        int v = atoi(p);
+        if (v > best) best = v;
     }
     fclose(f);
-    return util;
+    return std::min(100, best);
+}
+inline int get_tpu_util(int dev_id) {
+    (void)dev_id;
+    return read_jpu_usage();
 }
 inline std::vector<int> get_vpu_util(int dev_id) {
     (void)dev_id;
-    return {get_tpu_util(dev_id)};
+    return {read_jpu_usage()};
 }
 inline std::vector<int> get_vpp_util(int dev_id) {
     (void)dev_id;
@@ -1271,8 +1300,7 @@ inline std::vector<int> get_vpp_util(int dev_id) {
 inline std::vector<size_t> get_dev_stat(int dev_id) {
     (void)dev_id;
     return {0, 0};
-}
-inline int get_chip_temp(int dev_id) {
+}inline int get_chip_temp(int dev_id) {
     (void)dev_id;
     return 0;
 }

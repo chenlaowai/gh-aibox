@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 99
+iteration: 100
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,23 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 100 — 2026-11-18 — 预览/合流空白与 ROI 线修复：packed stride 与设备侧画线
+
+- **现象（用户反馈）**：合流墙与单通道预览没有画面；部分画面黑白；配置区域线（ROI）没画对。
+- **根因 1（预览/合流空白）**：兼容层 `convert_format(..., FORMAT_BGR_PACKED)` 按「1 字节/像素」算 stride（`w`），
+  而 packed BGR 每行是 `w*3` —— 设备侧写入越界、图像错乱，单通道/合流瓦片渲染返回空，
+  前端只剩「监控视频流状态」占位卡；告警图（planar）一直正常，所以只有预览/合流坏。
+  修复：新增 `format_bpp()`（packed BGR/RGB = 3），`convert_format`/`crop_and_resize*`/`image_copy_to` 统一使用。
+- **根因 2（ROI 线不对）**：兼容层 `polylines` 用矩形近似，只画水平/垂直线段，斜边被跳过；
+  `bmcv_image_draw_point` 在 packed 图上也不生效。改为 CPU `cv::polylines`（与告警图同一路径）
+  + 按行 `bm_memcpy_s2d_partial_offset` 写回设备图，支持任意多边形/斜边/线宽。
+- **黑白画面**：用已知彩色相机（数智技术中心_第二排 1280×720）验证预览为**彩色**，
+  NV12→BGR 转换正确；合流墙上呈灰度的相机（淮河25K/28K、乙烯南路等）源本身是黑白/低照度相机。
+- **验证**：单通道预览 1280×720 彩色 + 绿色 ROI 多边形（含斜边）正确；合流墙 `all_1` 九宫格出图；
+  `all_3` 8 秒 42 帧（5.15 fps，平均 750KB/帧）；单通道 4.65 fps。
+- **顺带**：`get_tpu_util/get_vpu_util` 改为读 `/proc/jpuinfo`（之前恒 0）。
+- **新增**：`docs/PRODUCTION_MATRIX.md` —— 与生产盒子的逻辑/参数/资源/输出四维对比 + 待补测参数清单。
+
 
 ### 迭代 99 — 2026-11-18 — 路线 B 落地：删掉 sail，vm 二进制只链 bmcv/bmrt/sophon-ffmpeg
 

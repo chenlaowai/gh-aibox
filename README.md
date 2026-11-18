@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 99
+iteration: 100
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,8 @@ commit: -
 一句话定位：把原先 Python 写的 BM1684X AI 检测服务端用 C++ 重写并 Docker 化；当前已是**可运行的 MVP+**：5 类模型、ISC、告警 5+5 视频、多实例调度、36 路压测、硬件加速合流、Docker/Compose 均已跑通；实时预览已按生产方案重构为**按需渲染 + 真内容 10fps + 1080p 只缩不放**。
 
 ## 当前状态
+
+- **2026-11-18 预览/合流修复（迭代 100）**：packed BGR 的 stride 按 w*3 修正后，合流墙与单通道预览恢复出图；ROI 区域线改 CPU 绘制 + 按行写回设备图，斜边/多边形正确。并新增 docs/PRODUCTION_MATRIX.md（与生产盒子四维对比）。
 
 - **2026-11-18 路线 B 已落地（迭代 99）**：新增 `src/routeb/compat.hpp`，用
   `bmcv_*` + `bmrt_*` + sophon-ffmpeg **替换掉 sail**（`ldd` 无 `libsail.so`，调用点未改）。

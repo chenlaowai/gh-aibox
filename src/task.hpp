@@ -938,7 +938,10 @@ private:
             int fail_count = 0;
             sail::BMImage frame;  // reused: one allocation per task, not per frame
             while (!stop_) {
-                int ret = decoder_->read(handle, frame);
+                // Snapshot the shared_ptr: a concurrent stop/reconnect may reset
+                // the member, and read() must never run on a freed Decoder.
+                std::shared_ptr<sail::Decoder> dec = decoder_;
+                int ret = dec ? dec->read(handle, frame) : -1;
                 finalize_video(false);
                 if (ret != 0) {
                     ++fail_count;

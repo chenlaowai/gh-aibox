@@ -10,6 +10,15 @@ commit: -
 
 ## 已知缺陷
 
+### KI-043 packed 图 stride 与设备侧画线（路线 B 预览空白的真凶）
+
+- `convert_format(..., FORMAT_BGR_PACKED)` 用「1 字节/像素」算 stride（`w`）会让设备侧
+  按 3 倍行宽写入 → 图像错乱、瓦片渲染返回空，**表现为合流墙/单通道预览全黑，但告警图正常**
+  （告警图走 planar）。行字节必须 `w * format_bpp(fmt)`（packed BGR/RGB=3）。
+- `bmcv_image_draw_point` 与批量 `draw_rectangle` 在 packed 图上都不生效（返回 0 但不画），
+  ROI 线因此丢失；可靠做法是 CPU `cv::polylines` + 按行 `bm_memcpy_s2d_partial_offset` 写回设备图。
+- 相关文件：`src/routeb/compat.hpp`（`format_bpp`、`polylines`）
+
 ### KI-042 路线 B（bmcv 直调）集成期的 5 个坑（已修，留作教训）
 
 1. **`bm_image_create` 的 stride 是「每平面一个」**：三平面 `FORMAT_BGR_PLANAR` 只传
