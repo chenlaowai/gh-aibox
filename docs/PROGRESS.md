@@ -70,12 +70,15 @@ commit: -
 - **rea 现状**：本机 `rea analyze` 对 aarch64 ELF 无可用 provider（ghidra P0 只收 PE/6502、
   hopper 不支持 win32、ida/kuna 未配置，证据 `.work/rea_analyze_edge.json`）；生产侧逆向沿用
   已提取的 `prod_edge_strings.txt` / `prod_syms_all.txt` / `edge_syms.txt` + 只读 sqlite。
-- **切换后稳定性采样（17:20~17:30）**：`restarts=0`、无 FATAL；RSS 1.19GB → **889MB**
-  （`malloc_trim` 周期回收，非单调增长）、fd 847~875、threads 272、CPU 稳态 **156~191%**
-  （采样瞬时峰值 350%，与告警密集时段重合，未逐线程归因）。
+- **切换后稳定性采样（17:20~17:35）**：`restarts=0`、无 FATAL；RSS 1.19GB → **889~900MB**
+  （`malloc_trim` 周期回收，非单调增长）、fd 847~875、threads 271~272；
+  CPU 用 cgroup `cpuacct.usage` 60s 均值 = **2.26 核（226%）**（`docker stats` 瞬时快照在
+  170~577% 间跳，采样噪声大；迭代 101 的 0.5.3 为 191~197%，但当时 30 路有图、现在 33 路，
+  且告警密度高：15 分钟 85 个 mp4/108 张 jpg）。
   频道健康日志 `/data/CT/routeb_dev/health_1720.log`（60s 一条）显示 **31~33/36 ok** 波动：
   固定 3 路 5XX，另有 14K/28K/钢栈桥偶发掉线后 **1 分钟内自愈**（ISC 会话抖动，非永久黑屏）；
-  两路新告警视频 674KB / 1.21MB。
+  钢栈桥同期仍在正常检测并产生 `vest` 告警视频（674KB / 1.21MB）。
+  剩余优化项：告警密度高时 CPU 峰值明显，后续可加每算法告警节流/JPEG 设备侧编码。
 - **回滚**：`docker rm -f aidetect && docker rename aidetect_prev051 aidetect`，并把
   `bin/aidetect.pre051_20261118` 改名回 `bin/aidetect` 后 `docker start aidetect`（旧镜像
   `aidetect:current` 未动）。备份：`bin/container-aidetect-20261118.json`、`bin/aidetect.pre_routeb_20261118`。
