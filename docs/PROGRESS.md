@@ -34,6 +34,9 @@ commit: -
 - **25K / 龙港钢栈桥 复验（15:39）**：两路均在出 `detect round`；龙港单通道预览 1280×720 **彩色**画面正常
   （此前「没画面」是 ≤1080p 通道 planar 拷贝失败导致预览不排队，不是 ISC 取流问题）。
   服务连续运行 3 分 32 秒 restarts=0、crashes=0、CPU 151%、RSS 944MB。
+- **SDK 镜像已构建（待切换）**：用 `reference/release/SDK-23.09-LTS-SP5` 的 libsophon 0.5.1 + sophon-mw 0.14.0
+  构建了镜像 **`aidetect:routeb051`**（`/opt/sophon-sdk` 内同时保留 0.5.1/0.14.0 两套目录，`LD_LIBRARY_PATH` 指向新版本），
+  旧的 `aidetect:current` 未动、运行中的容器未重启。切换容器需维护窗口（重建容器偶发楔死要重启盒子），下轮执行。
 - **SDK 回退（本轮结论）**：混挂 0.5.1/0.14 库会让进程 abort（曾崩溃循环 restarts=10）。已把 `env/env.sh`
   恢复 0.5.3/0.15.0、`/opt/bin/sdk` 改名停用；重建部署后 36 路运行 3 分钟 restarts=0、CPU 142%、RSS 943MB。
   真正对齐生产需**重建容器镜像**（把 `/opt/sophon-sdk` 整体换成 0.5.1+0.14），不能只靠 RPATH 混挂。
