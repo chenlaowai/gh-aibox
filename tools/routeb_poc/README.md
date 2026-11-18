@@ -76,3 +76,8 @@ M=/data/CT/models/BM1684X/yolov11s_fp16_1b_back_reflectivejacket_1.bmodel
   与 RTSP 只是 URL/容器不同；PoC 用 RTSP 验证了同一解码路径，ISC 留到集成时复验。
 - 36 路并发下的 bmcv 设备侧排队（`vpp_convert` 单帧 22ms wall）需要在集成后用
   抽帧节奏（`frameInterval`）压住；这是下一阶段的主要观察点。
+### 迭代 98 佐证图
+
+`docs/assets/routeb_poc_frame.jpg`：`tools/routeb_poc/poc.cpp` 在 10.10.206.25 上
+直连相机 `数智技术中心_第二排`（2560×1440 H.264），VPU 硬解 → bmcv 缩放/归一化 →
+bmrt 推理 → bmcv JPEG 的实拍输出（1280×720，322416 B，OSD 时间与墙钟一致）。
