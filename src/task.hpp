@@ -349,6 +349,7 @@ public:
             // stream.  Opening the channel in the Web UI switches back to main.
             // Enabled by /tmp/aidetect_auto_substream (runtime, no restart).
             if (cfg_.channel_address.rfind("isc://", 0) == 0 &&
+                auto_substream_enabled() &&
                 std::ifstream("/tmp/aidetect_auto_substream").good()) {
                 const bool watching = want_single_ && want_single_();
                 const int want = watching ? 0 : 1;
@@ -361,6 +362,7 @@ public:
                 }
             }
             if (cfg_.channel_address.rfind("rtsp://", 0) == 0 &&
+                auto_substream_enabled() &&
                 std::ifstream("/tmp/aidetect_auto_substream").good()) {
                 const std::string sub = substream_url(cfg_.channel_address);
                 if (!sub.empty()) {
@@ -643,6 +645,19 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(2000));
         }
     }
+    // Production selects main/sub stream from the channel config
+    // (table_media.streamType) and never switches at runtime.  Our auto
+    // switch is opt-in via AIDETECT_AUTO_SUBSTREAM: it tears down the gateway
+    // (and the 5 s pre-alarm ring) and is one of the cross-thread
+    // stop_gateway() callers, so it must not be enabled implicitly by a marker
+    // file.
+    static bool auto_substream_enabled() {
+        static const bool on = [] {
+            const char* v = std::getenv("AIDETECT_AUTO_SUBSTREAM");
+            return v && *v && std::string(v) != "0";
+        }();
+        return on;
+    }
     // Derive the substream URL for the common IP-camera layouts so idle
     // channels can decode a ~10x smaller stream.
     static std::string substream_url(const std::string& s) {
@@ -875,6 +890,12 @@ private:
                 }
                 try {
                     std::lock_guard<std::mutex> hw(decode_hw_mutex());
+                    // Release the previous decoder before allocating the new
+                    // one: each bm decoder holds tens of MB of VPU frame
+                    // buffers, and overlapping two of them per channel is what
+                    // exhausted the heap during reconnect waves.
+                    decoder_.reset();
+                    decoder_holder.reset();
                     decoder_holder = std::make_shared<sail::Decoder>(source_url_, true, 0);
                     decoder_ = decoder_holder;
                     if (decoder_->is_opened()) {
@@ -950,6 +971,11 @@ private:
                 // the member, and read() must never run on a freed Decoder.
                 std::shared_ptr<sail::Decoder> dec = decoder_;
                 int ret = dec ? dec->read(handle, frame) : -1;
+                // Drop our snapshot before any reconnect path can create a new
+                // decoder: otherwise the old decoder (and its ~85 MB of VPU
+                // frame buffers) stays alive while the replacement allocates,
+                // doubling peak device memory and exhausting the VPU heap.
+                dec.reset();
                 finalize_video(false);
                 if (ret != 0) {
                     ++fail_count;
@@ -990,6 +1016,8 @@ private:
                         restart_recorder();
                         try {
                             std::lock_guard<std::mutex> hw(decode_hw_mutex());
+                            decoder_.reset();
+                            decoder_holder.reset();
                             decoder_holder = std::make_shared<sail::Decoder>(source_url_, true, 0);
                             if (decoder_holder->is_opened()) {
                                 decoder_ = decoder_holder;
@@ -2648,7 +2676,12 @@ private:
         std::vector<unsigned char> buf;
         {
             std::lock_guard<std::mutex> lk(jpeg_hw_mutex());
-            cv::imencode(".jpg", canvas, buf);
+            static const int jq = [] {
+                const char* v = std::getenv("AIDETECT_JPEG_QUALITY");
+                int q = v && *v ? std::atoi(v) : 90;
+                return q < 30 ? 30 : (q > 100 ? 100 : q);
+            }();
+            cv::imencode(".jpg", canvas, buf, {cv::IMWRITE_JPEG_QUALITY, jq});
         }
         if (buf.empty()) return;        {
             std::lock_guard<std::mutex> lk(jpeg_mutex_);
@@ -2916,8 +2949,20 @@ private:
     // Resolution rule: only downscale, never upscale. Anything above 1080p is
     // fitted inside 1920x1080 (aspect kept); 1080p and below stays untouched.
     Size2 preview_target(int w, int h) {
-        if (preview_w_ > 0 && preview_h_ > 0) return {preview_w_, preview_h_};
         if (w <= 0 || h <= 0) return {1920, 1080};
+        if (preview_w_ > 0 && preview_h_ > 0) {
+            // The env override is a *cap*, never an upscale: 704x576 channels
+            // used to be blown up to 1920x1080 (bandwidth + CPU) because the
+            // override was returned unconditionally.
+            double s = std::min(1.0, std::min(static_cast<double>(preview_w_) / w,
+                                            static_cast<double>(preview_h_) / h));
+            if (s >= 1.0) return {w, h};
+            auto even = [](double v) {
+                int n = static_cast<int>(v);
+                return n < 2 ? 2 : (n & ~1);
+            };
+            return {even(w * s), even(h * s)};
+        }
         if (w <= 1920 && h <= 1080) return {w, h};
         // bmcv.vpp_resize is only pixel-correct for an integer divisor, so
         // pick the smallest k that brings the frame under 1920x1080 while
@@ -4123,6 +4168,11 @@ private:
         // hevc_mp4toannexb itself).  The codec is learned from the gateway log
         // on the first attempt, then the gateway retries with the filter.
     bool start_gateway(const std::string& upstream) {
+        // The status/watchdog thread may call stop_gateway() at any time (stall
+        // recovery / substream switch) while the task thread is (re)starting the
+        // gateway.  Serialize the whole lifecycle: two concurrent stop() calls
+        // used to join the same std::thread twice and abort the process.
+        std::lock_guard<std::recursive_mutex> gw(gateway_mu_);
         last_progress_ms_ = now_ms();
         stop_gateway();
         int p_dec = 0, p_rec = 0;
@@ -4418,6 +4468,7 @@ private:
         return false;
     }
     void stop_gateway() {
+        std::lock_guard<std::recursive_mutex> gw(gateway_mu_);
         seg_rec_.stop();
         bridge_.stop();
         if (gateway_pid_num_ > 0) {
@@ -4563,7 +4614,12 @@ private:
         report["video"] = "";
         log_warn(cfg_.task_id + " ALARM model=" + model_name + " count=" +
                  std::to_string(count) + " img=" + img_path);
-        int post = std::max(1, cfg_.video_duration - 5);
+        // Production: VideoRecordSec (total) + VideoRecordPrefix=0.5, i.e. the
+        // clip is split half before / half after the alarm frame.  The old
+        // hardcoded pre=5 only matches the default duration of 10 s.
+        int dur = std::max(2, cfg_.video_duration);
+        int pre = std::max(1, dur / 2);
+        int post = std::max(1, dur - pre);
         if (pending_.active) {
             // Finalize the previous clip instead of dropping this alarm's
             // video. Rapid multi-algorithm alarms used to get video="" here.
@@ -4594,23 +4650,23 @@ private:
             // and assemble it in finalize_video() after the post seconds were
             // actually recorded.
             pending_.from_segments = true;
-            pending_.seg_pre = 5;
+            pending_.seg_pre = pre;
             pending_.seg_post = post;
             pending_.ready_ms = now_ms() + static_cast<int64_t>(post) * 1000;
             rc = 0;
             async_dump = true;
-            log_info(cfg_.task_id + " segment clip scheduled pre=5 post=" +
-                     std::to_string(post) + " segs=" +
-                     std::to_string(seg_rec_.segment_count()));
+            log_info(cfg_.task_id + " segment clip scheduled pre=" +
+                     std::to_string(pre) + " post=" + std::to_string(post) +
+                     " segs=" + std::to_string(seg_rec_.segment_count()));
         }
         if (rc != 0 && use_multi_)
-            rc = decode_pool_.dump(group_, slot_, 5, post, pending_.tmp_path);
+            rc = decode_pool_.dump(group_, slot_, pre, post, pending_.tmp_path);
         // The box runs with AIDETECT_NO_DUMP=1 to avoid SAIL dump crashes;
         // use the external video service when the packet ring could not
         // produce a file, otherwise HEVC/ISC tasks keep video_path empty.
         if (rc != 0 && no_dump_env()) {
             rc = dump_in_worker(upstream_url_.empty() ? source_url_ : upstream_url_,
-                                5, post, pending_.tmp_path);
+                                pre, post, pending_.tmp_path);
         }
         if (rc != 0 && !no_dump_env()) {
             if (use_multi_) {
@@ -4619,7 +4675,7 @@ private:
                 size_t colon = vurl.rfind(':');
                 if (colon != std::string::npos) {
                     Json req = {{"url", upstream_url_.empty() ? source_url_ : upstream_url_}, {"out", pending_.tmp_path},
-                                {"pre", 5}, {"post", post}};
+                                {"pre", pre}, {"post", post}};
                     auto reply = http_post_raw(vurl.substr(0, colon),
                                                vurl.substr(colon + 1),
                                                "/dump", req.dump(), 30000);
@@ -4631,7 +4687,7 @@ private:
                     }
                 }
                 if (rc != 0) {
-                    rc = dump_in_worker(upstream_url_.empty() ? source_url_ : upstream_url_, 5, post, pending_.tmp_path);
+                    rc = dump_in_worker(upstream_url_.empty() ? source_url_ : upstream_url_, pre, post, pending_.tmp_path);
                 }
             } else if (decoder_) {
                 rc = decoder_->dump(5, post, pending_.tmp_path);
@@ -4663,6 +4719,15 @@ private:
                      std::to_string(post) + "s");
         }
     }
+    // Production caps alarm clips at VideoRecordLimitMB (default 20 MB).
+    int video_limit_mb() const {
+        static const int v = [] {
+            const char* e = std::getenv("AIDETECT_VIDEO_LIMIT_MB");
+            int n = (e && *e) ? std::atoi(e) : 20;
+            return n <= 0 ? 20 : n;
+        }();
+        return v;
+    }
     static bool mp4_is_hevc(const std::string& path) {
         std::ifstream f(path, std::ios::binary);
         if (!f) return false;
@@ -4680,15 +4745,31 @@ private:
     // Re-encode only HEVC clips to H.264 with the on-board encoder.
     bool ensure_browser_mp4(const std::string& path) {
         if (!std::filesystem::exists(path) || !mp4_is_hevc(path)) return true;
+        // One transcode at a time: software HEVC decode + h264_bm encode costs
+        // several cores, and a burst of alarms used to spawn a dozen ffmpeg
+        // children that starved the live decoders.  If the slot is busy keep the
+        // HEVC file (valid, just not playable in Chrome) instead of queueing on
+        // the decode thread.
+        static std::mutex tx_mu;
+        std::unique_lock<std::mutex> tx(tx_mu, std::try_to_lock);
+        if (!tx.owns_lock()) {
+            log_warn(cfg_.task_id + " alarm video transcode busy, keeping HEVC");
+            return false;
+        }
         std::string tmp = path + ".h264.tmp.mp4";
         std::string log = "/tmp/" + cfg_.task_id + "-transcode.log";
+        std::error_code pre_ec;
+        std::filesystem::remove(tmp, pre_ec);  // stale temp from a killed run
         // Force the software HEVC decoder. With 30 concurrent stream decoders
         // the VPU has no free decode core, and letting ffmpeg pick a BK
         // decoder produced "VPU_DecIssueSeqInit"/empty output for 4K HEVC.
         // Software HEVC decode + h264_bm encode works on the same box.
-        std::string cmd = "ffmpeg -y -nostdin -hide_banner -loglevel error -c:v hevc -i '" +
-                          path + "' -c:v h264_bm -is_dma_buffer 0 -pix_fmt nv12 "
-                          "-movflags +faststart -an '" + tmp + "' >" + log + " 2>&1";
+        // -fs caps the clip at production's VideoRecordLimitMB; timeout keeps a
+        // wedged transcode from blocking the decode thread forever.
+        std::string cmd = "timeout 60 ffmpeg -y -nostdin -hide_banner -loglevel error -c:v hevc -i '" +
+                          path + "' -c:v h264_bm -is_dma_buffer 0 -pix_fmt nv12 -fs " +
+                          std::to_string(video_limit_mb()) +
+                          "M -movflags +faststart -an '" + tmp + "' >" + log + " 2>&1";
         int rc = std::system(cmd.c_str());
         std::error_code ec;
         auto sz = std::filesystem::exists(tmp)
@@ -4738,9 +4819,10 @@ private:
                 for (int i = 0; i < 60 && !bridge_.clip_done(); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 std::string cmd =
-                    "ffmpeg -y -nostdin -hide_banner -loglevel error -i '" +
-                    ts_src + "' -c copy -movflags +faststart '" +
-                    pending_.tmp_path + "' >> /tmp/clip_remux.log 2>&1";
+                    "timeout 60 ffmpeg -y -nostdin -hide_banner -loglevel error -i '" +
+                    ts_src + "' -c copy -fs " + std::to_string(video_limit_mb()) +
+                    "M -movflags +faststart '" + pending_.tmp_path +
+                    "' >> /tmp/clip_remux.log 2>&1";
                 int crc = std::system(cmd.c_str());
                 std::error_code ecc;
                 if (crc != 0) {
@@ -4776,6 +4858,30 @@ private:
             log_warn(cfg_.task_id + " dump file missing: " + pending_.tmp_path);
         }
         if (ok) {
+            // A direct copy of a 4K HEVC ring can exceed the production quota
+            // (VideoRecordLimitMB=20). Trim with a stream copy so the file stays
+            // playable; keep the original if the trim fails.
+            std::error_code se;
+            auto fsz = std::filesystem::file_size(pending_.final_path, se);
+            const long long limit = static_cast<long long>(video_limit_mb()) * 1024 * 1024;
+            if (!se && static_cast<long long>(fsz) > limit) {
+                const std::string part = pending_.final_path + ".limited.mp4";
+                std::string cmd =
+                    "timeout 60 ffmpeg -y -nostdin -hide_banner -loglevel error -i '" +
+                    pending_.final_path + "' -c copy -fs " +
+                    std::to_string(video_limit_mb()) + "M -movflags +faststart '" +
+                    part + "' >> /tmp/clip_remux.log 2>&1";
+                if (std::system(cmd.c_str()) == 0) {
+                    std::error_code re;
+                    std::filesystem::rename(part, pending_.final_path, re);
+                    if (re) std::filesystem::remove(part, re);
+                    else log_info(cfg_.task_id + " alarm video capped to " +
+                                  std::to_string(video_limit_mb()) + "MB");
+                } else {
+                    std::error_code re;
+                    std::filesystem::remove(part, re);
+                }
+            }
             ensure_browser_mp4(pending_.final_path);
             pending_.report["video"] = pending_.final_path;
         }
@@ -4855,6 +4961,9 @@ private:
     std::string ring_url_;
     std::string gateway_pid_;
     pid_t gateway_pid_num_ = 0;
+    // Serializes start_gateway()/stop_gateway() between the task thread and the
+    // status/watchdog thread (see start_gateway comment).
+    std::recursive_mutex gateway_mu_;
     int port_dec_ = 0;
     int port_rec_ = 0;
     std::string source_url_;

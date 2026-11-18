@@ -411,7 +411,13 @@ private:
                     tile.copyTo(canvas_cv(cv::Rect((i % 3) * 640, (i / 3) * 360,
                                                    640, 360)));
                 }
-                if (!cv::imencode(".jpg", canvas_cv, buf)) {
+                static const int jq = [] {
+                    const char* v = std::getenv("AIDETECT_JPEG_QUALITY");
+                    int q = v && *v ? std::atoi(v) : 90;
+                    return q < 30 ? 30 : (q > 100 ? 100 : q);
+                }();
+                if (!cv::imencode(".jpg", canvas_cv, buf,
+                                  {cv::IMWRITE_JPEG_QUALITY, jq})) {
                     log_warn("aggregate imencode failed");
                     continue;
                 }
@@ -531,12 +537,18 @@ inline Json get_occupancy() {
              {"mem", pct(mem_pct)},
              {"disk_free", std::round(disk * 100) / 100},
              {"tpu", pct(tpu)},
+             {"jpu", pct(sail::read_jpu_usage())},
              {"vpu_1", vpu.size() > 0 ? pct(vpu[0]) : 0},
              {"vpu_2", vpu.size() > 1 ? pct(vpu[1]) : 0},
              {"vpu_3", vpu.size() > 2 ? pct(vpu[2]) : 0},
              {"vpp_1", vpp.size() > 0 ? pct(vpp[0]) : 0},
              {"vpp_2", vpp.size() > 1 ? pct(vpp[1]) : 0},
              {"memory", pct(dev_used)},
+             {"bm_live_mb", sail::bm_live_mb()},
+             {"bm_alloc_n", sail::bm_alloc_count().load()},
+             {"bm_free_n", sail::bm_free_count().load()},
+             {"hw_jpeg_ok", sail::hw_jpeg_ok_count().load()},
+             {"hw_jpeg_fail", sail::hw_jpeg_fail_count().load()},
              {"chip_temp", chip},
              {"board_temp", board}};
     } catch (const std::exception& e) {

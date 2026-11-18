@@ -5,6 +5,11 @@
 > `docker stats` CPU **162.7%**（≈4.5%/路）、RSS 1.09~1.12 GB、threads 277~280、
 > restarts=0；25K 704×576 / 龙港钢栈桥 1280×720 / 6488 2560×1440 均有彩色预览，
 > 告警视频 9.68s。下表 12:00 口径的数字保留作对照。
+> **2026-11-18 23:55 迭代 103 复测（设备 JPEG + 告警视频/遥测对齐）**：36 路、32~33 ok，
+> cgroup 30s 均值 **~240%**、RSS **1.03~1.05 GB**、fd 876~913、threads 270~280、
+> dma-buf 对象 **1288~1342 稳定**、`bm_live_mb` **559~726**、restarts=0；
+> `hw_jpeg_ok=73/fail=0`（设备侧 JPEG）、`vpu_1/2=77~91/99~100`；新告警视频
+> **H.264/1280×720/8.98s/1.13MB**（pre 5s + post 5s，20MB 上限）。
 > 我方：`10.10.206.25`（aidetect，容器，`--network host`），36 路任务。
 > 生产：`10.10.207.46`（`./app`，宿主机 systemd），22 路任务；**全程只读**（ps/proc/sysfs/sqlite ro）。
 > 「—」= 该项未采集或不适用；「*」= 历史文档/Web 观测值。
@@ -35,13 +40,13 @@
 | 推理 | `bmrt_load_bmodel` + `bmrt_launch_tensor_ex`，输入零拷贝、输出张量复用 | `board::base_model`（bmodel） | 一致 |
 | 调度 | FIFO 门票闸门 + 有界并发（默认 4）+ 多实例（同算法 ≤2） | 每任务异步 workLoop + 回调，赶不上就跳过该算法 | 语义一致 |
 | 后处理 | YOLOv5/v11/Damo 自研 + 逐类 NMS + ROI + 跟踪 | 生产插件（同名算法） | 参数对齐见 §3 |
-| 单通道预览 | 设备侧缩放 + 设备侧画框 + JPEG（CPU 编码） | `JpegEncoderInstance` 设备侧编码 | 我们仍有一次 CPU 编码（待优化） |
-| 合流墙 | 4 组 × 3×3，设备侧画布 + `image_copy_to` + JPEG | `MergeInstance`（硬件合流） | 形态一致 |
-| 告警图片 | 设备侧画框 + JPEG（1280×720 / 原尺寸） | 设备侧编码 | 一致 |
-| 告警视频 | `TsSegmentRecorder`：TS 4s×6 分段环 → ffmpeg remux MP4 | `dump4`：每通道常驻，取 pre/post 进程内写 MP4 | 目标一致，实现不同 |
+| 单通道预览 | 设备侧缩放 + 设备侧画框 + **设备侧 JPEG**（NV12→`bmcv_image_jpeg_enc`，CPU 仅回退） | `JpegEncoderInstance` 设备侧编码 | **已对齐**（`hw_jpeg_ok>0/fail=0`；质量 `AIDETECT_JPEG_QUALITY`） |
+| 合流墙 | 4 组 × 3×3，设备侧画布 + `image_copy_to` + 设备侧 JPEG | `MergeInstance`（硬件合流） | 形态一致 |
+| 告警图片 | 设备侧画框 + **设备侧 JPEG**（1280×720 / 原尺寸） | 设备侧编码 | **已对齐** |
+| 告警视频 | `TsSegmentRecorder`：TS 2s×12 分段环 → ffmpeg remux MP4，HEVC 源转 H.264 | `dump4`：每通道常驻，取 pre/post 进程内写 MP4 | 目标一致（10s、20MB 上限），实现不同 |
 | 上报 | HTTP JSON + JWT，告警图/视频路径回填 | 同（`report_address`） | 一致 |
 | 配置同步 | 每 2s 从后端 reconcile（任务/ROI/算法参数热更新） | 生产由 Web 下发到 `TaskInstance` | 一致 |
-| 子码流切换 | 有（`/tmp/aidetect_auto_substream` 开关，默认关） | 生产按需主/子码流 | 未启用 |
+| 子码流切换 | 显式 `AIDETECT_AUTO_SUBSTREAM=1` 才启用，默认按 URL `streamType` | 生产按通道配置 `streamType` | **已对齐**（默认配置驱动） |
 
 ## 3. 参数对比
 
@@ -53,28 +58,29 @@
 | 检测节奏 `frameInterval` | 按任务配置抽帧（默认 5 帧≈3fps） | 同名字段 | 一致 |
 | 告警阈值 `detectThreshold` | 每算法可配（如 0.8/0.9/0.4） | `people_*_threshold` 等 | 一致 |
 | ROI | 多边形 + 区域线，越界过滤 | 同 | 一致 |
-| 告警视频时长 | `video_duration`（默认 5s）+ 2s 余量 → 实测 **9.68s**（pre5+post5） | `VideoRecordSec=10` + `VideoRecordPrefix=0.5`（生产 DB `table_preference`，值 10 / 0.500000）→ **前 5s+后 5s** | **已对齐**（生产 dump4 同样是总 10s、前后各半） |
-| 告警视频编码 | H.264 / 1280×720（HEVC 源走 hevc 直拷；25K 704×576 HEVC 实测） | H.264（`Mp4RecorderEngine` 可切 0/1） | 编码跟随源，生产可转码 |
-| 告警视频体积限制 | 未限 | `VideoRecordLimitMB=20` | 待补 |
+| 告警视频时长 | `pre=round(video_duration×0.5)`、`post=duration-pre` → 实测 **8.98s** | `VideoRecordSec=10` + `VideoRecordPrefix=0.5`（生产 DB `table_preference`，值 10 / 0.500000）→ **前 5s+后 5s** | **已对齐**（比例驱动，不再硬编码 5s） |
+| 告警视频编码 | H.264 / 1280×720（HEVC 源转码 `h264_bm`；转码忙时保留 HEVC） | H.264（`Mp4RecorderEngine` 可切 0/1） | **已对齐**（实测 H.264/1280×720） |
+| 告警视频体积限制 | `-fs AIDETECT_VIDEO_LIMIT_MB`（默认 20MB） + 转码 60s 超时 + 残留启动清理 | `VideoRecordLimitMB=20` | **已对齐** |
 | 告警冷却 | `cooldown_time`（默认 180s）+ 算法级 repeat | 同 | 一致 |
-| JPEG 质量 | OpenCV 默认（≈95） | 生产 `QualityOfPreview` 可配 | 我们不可配（待补） |
-| 预览分辨率 | ≤1920×1080（整数倍 VPP 缩放） | 原尺寸 / 1080p | 知情差异 |
+| JPEG 质量 | `AIDETECT_JPEG_QUALITY`（默认 90，30~100 clamp） | 生产 `QualityOfPreview`（低/中/高 ≈40/70/90） | 可配；默认值仍偏高 |
+| 预览分辨率 | ≤1920×1080（整数倍 VPP 缩放；env 覆盖只缩不放） | 原尺寸 / 1080p | 知情差异（ADR-088：默认 1080p 上限） |
 | 预览帧率上限 | 10 fps（按需渲染） | 生产约 3~5 fps（Web 观测*） | 我们更高 |
-| 重连退避 | 指数退避 + ISC 候选轮换 | 生产有重连机制 | 一致 |
-| 解码器生命周期 | 失败 5 次后重建 | 常驻不重建 | **生产更优**（我们重建有代价） |
+| 重连退避 | 指数退避 + ISC 候选轮换 + 200ms 开流节流 | 生产有重连机制 | 一致 |
+| 解码器生命周期 | 失败 5 次后重建（已修：先释放后创建、失败路径释放、帧缓冲减半） | 常驻不重建 | **生产更优**（重建代价已压到可控） |
 
 ## 4. 硬件资源占用（同口径）
 
 | 指标 | 我方（36 路） | 生产（22 路） | 说明 |
 |---|---|---|---|
-| 整机 CPU（`ps %cpu`） | **191~197%**（≈2 核） | **72%**（≈0.72 核） | 单路：我们 5.3%/路，生产 3.3%/路 |
-| 进程 RSS | **640~1130 MB**（`malloc_trim` 周期，稳态 ~700） | **2139 MB** | 我们更省 |
-| 线程数 | **268~278** | **1021** | 我们少 3.7 倍 |
-| 进程 fd | 1300~1400 | 390 | 我们高（每路解码/UDP/文件） |
-| dmabuf 映射 | **290~291（恒定）** | **0** | 生产不解 mmap；我们设备侧 attach 后仍有解码器内部映射 |
-| 温度（thermal zone 0/1） | 54 / 62 ℃ | 50 / 46 ℃ | 我们稍高（CPU 更忙） |
-| JPU 负载（/proc/jpuinfo） | usage 0~1%（瞬时采样） | 0%（瞬时采样） | 都是瞬时值，需连续采样 |
-| TPU 利用率 | `/get_occupancy` 目前返回 0（未接） | 生产 Web 显示（未取） | **待补**：我方需接 `/proc/vpuinfo`/驱动统计 |
+| 整机 CPU（cgroup 30s 均值） | **~240%**（≈2.4 核；`docker stats` 瞬时 171~581%） | **72%**（≈0.72 核） | 单路：我们 ~7%/路（33 路解码），生产 3.3%/路；VPU 已 100% |
+| 进程 RSS | **1.03~1.05 GB**（迭代 103 实测，trim 后） | **2139 MB** | 我们更省 |
+| 线程数 | **270~280** | **1021** | 我们少 3.7 倍 |
+| 进程 fd | **876~913** | 390 | 我们高（每路解码/UDP/文件） |
+| dma-buf 对象 | **1353~1401 稳定**（`bm_live_mb` 559~697） | 生产 dmabuf 映射 0 | 生产 media_sdk 不解 mmap；我们解码器内部映射，已稳定不涨 |
+| 温度（thermal zone 0/1） | 55 / 63 ℃ | 50 / 46 ℃ | 我们稍高（CPU 更忙） |
+| JPU 负载（`/get_occupancy.jpu`） | 0~1%（JPU0/1 usage；已接遥测） | 未取 | 预览/告警图已走设备编码 |
+| VPU 利用率（`/proc/vpuinfo`） | **84~100%**（core0/1，33 路解码） | 未取 | 已接 `/get_occupancy.vpu_1/2` |
+| TPU 利用率 | 仍 0（本内核无 userspace 接口，不造数） | 生产 Web 显示（未取） | 见 §7 建议 |
 | 磁盘占用（告警媒体） | 见 §5 | 538 MB（`/data/app/Images`） | — |
 | 进程连续运行 | 8min+（重启后） | 5 天 16 小时 | 生产更稳（见 §6） |
 

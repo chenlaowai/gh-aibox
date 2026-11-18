@@ -46,7 +46,8 @@ public:
     // (0 disables).  use_bsf: force hevc_mp4toannexb (learned by the caller).
     bool start(const std::string& url, int dec_port, int rec_port, bool use_bsf,
                bool loop_file) {
-        stop();
+        std::lock_guard<std::mutex> life(life_mu_);
+        stop_locked();
         url_ = url;
         dec_port_ = dec_port;
         rec_port_ = rec_port;
@@ -59,11 +60,8 @@ public:
     }
 
     void stop() {
-        running_ = false;
-        if (thread_.joinable()) thread_.join();
-        std::lock_guard<std::mutex> lk(clip_mu_);
-        if (clip_fd_ >= 0) { ::close(clip_fd_); clip_fd_ = -1; }
-        clip_active_ = false;
+        std::lock_guard<std::mutex> life(life_mu_);
+        stop_locked();
     }
 
     bool running() const { return running_.load(); }
@@ -433,7 +431,25 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     std::mutex mu_;
+    // start()/stop() are called from both the task and the status/watchdog
+    // thread; concurrent join() of the same std::thread throws
+    // std::system_error in the watchdog lambda and aborts the process.
+    std::mutex life_mu_;
     std::string error_;
+
+    // Caller must hold life_mu_.
+    void stop_locked() {
+        running_ = false;
+        if (thread_.joinable()) {
+            if (thread_.get_id() == std::this_thread::get_id())
+                thread_.detach();
+            else
+                thread_.join();
+        }
+        std::lock_guard<std::mutex> lk(clip_mu_);
+        if (clip_fd_ >= 0) { ::close(clip_fd_); clip_fd_ = -1; }
+        clip_active_ = false;
+    }
 };
 
 }  // namespace aidetect

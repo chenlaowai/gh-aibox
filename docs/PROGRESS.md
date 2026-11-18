@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 102
+iteration: 103
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,64 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 103 — 2026-11-18 — Web 预览全灭根因：僵尸容器 + stop_gateway 并发 join；设备内存 churn 收敛；生产对齐第一批（设备 JPEG/告警视频/遥测）
+
+- **现象**：23:00 左右 Web 端所有预览消失，`docker ps` 仍显示 `aidetect Up`，但 `docker exec` 报
+  `cannot exec a container that has stopped`、HTTP 9000 无响应。根因不是预览编码，而是**服务进程已崩**。
+- **崩溃根因（23:22 的 FATAL）**：backtrace = `Task::stop_gateway()` → `std::thread::join()`，
+  调用者是 `Task::start()` 里的 status/watchdog 线程 lambda。
+  `stop_gateway()` 会 `seg_rec_.stop()` / `bridge_.stop()`（都会 `join()` 自己的线程）；任务线程
+  （开流/重连）与 watchdog 线程（45s 无帧 / 60s 无首帧 / 切子码流）会**并发调用**，两次 join 同一
+  `std::thread` → `std::system_error` 在 watchdog 线程里未捕获 → `std::terminate` → SIGABRT。
+  崩溃后 PID1 变 `<defunct>`（Z），正是 KI-042 记录的僵尸容器：`docker restart -t 5`、`docker rm -f`
+  全部 hang，只能重启盒子（23:30/23:34 两次），且重启后容器是 `Dead`，需 `docker rm -f` 重建。
+- **修复**：
+  1. `Task` 增加 `std::recursive_mutex gateway_mu_`，`start_gateway()/stop_gateway()` 全程持锁
+     （`start_gateway` 内部会调 `stop_gateway`，故用递归锁）。
+  2. `IngestBridge`、`TsSegmentRecorder`、`AlarmRingRecorder` 的 start/stop 增加 `life_mu_`，
+     `join` 前判断 `get_id()==this_thread::get_id()`（自身线程调用则 `detach`），并把
+     `stop_locked()` 供 start 内部复用，杜绝并发/自 join。
+- **设备内存 churn（vdi_allocate_dma_memory fail 的来源）**：
+  - 实测确认这些 dma-buf 全是我们的：停止容器后 `/sys/kernel/debug/dma_buf/bufinfo` 对象数
+    **1453 → 2**；旧二进制启动 55s 就 996 个 / 29GB（虚拟），13 分钟 1487 个 / 54GB，并出现
+    `vdi_allocate_dma_memory size=5529600 fail`、`AllocateDecFrameBuffer fail`、
+    `bmvpu_dec_decode: the frame buffer count set is wrong`。
+  - 修复：`Decoder::open_locked()` 所有 early-return 统一 `release_locked()`（失败也关 fmt_）；
+    `frame_to_image()` 抛异常时先 `av_frame_unref()` 再抛（否则该帧 VPU 缓冲一直被 AVFrame 持住，
+    内存越紧越漏）；`release_locked()` 重置 `nv12_`（避免 stride 变化后旧 attach 复用）；
+    两条重建路径都先 `decoder_.reset()/decoder_.reset()` 再 `make_shared`（消除瞬时双份）；
+    `extra_frame_buffer_num=1`（默认 2，减半每路帧缓冲）；解码器开流全局 200ms 节流。
+  - 修复后 **10 分钟 soak（20 次采样，30s 间隔）**：dmabuf 对象 **1288~1342 稳定**、
+    `bm_live_mb` **559~726 稳定**（alloc/free 每分钟各约 1700 次但 live 不涨）、
+    RSS 1.01GB → trim 后 731MB → 813MB（无单调增长）、fd **818~849**、
+    `hw_jpeg_ok` 28→73（`hw_jpeg_fail=0`）、`vpu_1/2=77~91/99~100`、
+    `restarts=0`、`vdi_allocate_dma_memory/AllocateDecFrameBuffer` 错误 **0 次**、
+    **30~32/36 ok**（3 路 ISC 5XX + 偶发抖动）。CPU cgroup 30s 均值 **163~358%**（约 2.2 核）。
+- **生产对齐第一批（本迭代落地）**：
+  1. **设备侧 JPEG**：`Bmcv::imencode` 改为「BGR→VPP NV12→`bmcv_image_jpeg_enc`」，失败回退
+     CPU OpenCV；质量 `AIDETECT_JPEG_QUALITY`。独立验证 0.5.1 的 API 可用：
+     1280×720 编码 `enc rc=0 size=146584 SOI=ffd8`（`free()` 释放安全）。
+     线上 `/get_occupancy` 已有 **hw_jpeg_ok=17 / hw_jpeg_fail=0**（部署后 2 分钟）。
+  2. **预览 cap 误放大修复**：`AIDETECT_PREVIEW_WIDTH/HEIGHT` 以前无条件返回，704×576 通道会被
+     放大到 1920×1080；改为按比例**只缩不放**。
+  3. **告警视频对齐生产 dump4 语义**：`pre = round(video_duration×0.5)`、`post = duration-pre`
+     （生产 `VideoRecordSec=10` + `VideoRecordPrefix=0.5`，旧代码硬编码 pre=5）；`-fs
+     AIDETECT_VIDEO_LIMIT_MB`（默认 **20MB**，对齐 `VideoRecordLimitMB`）；transcode/remux 加
+     `timeout 60`；转码全局 `try_lock`（忙则保留 HEVC，避免转码风暴抢 VPU）；启动时清理 >10 分钟的
+     `.h264.tmp.mp4/.limited.mp4/.ts.keep`（本次启动清掉 13+71 个残留）。
+     实测新告警：**H.264 / 1280×720 / 8.98s / 1.13MB**。
+  4. **遥测**：`/get_occupancy` 新增 `jpu`、真实 `vpu_1/2`（解析 `/proc/vpuinfo`）、
+     `bm_live_mb`、`bm_alloc_n/free_n`、`hw_jpeg_ok/fail`；实测 `vpu_1=84~100, vpu_2=97~100`。
+     `tpu` 仍为 0：本内核无 userspace TPU 利用率接口（不造数）。
+  5. **子码流改显式开关**：`/tmp/aidetect_auto_substream` 需配合 `AIDETECT_AUTO_SUBSTREAM=1`
+     才生效，默认按通道 URL 的 `streamType`（对齐生产配置驱动），去掉一个跨线程
+     `stop_gateway()` 触发点。
+- **仍存在**：3 路 ISC `5XX`（龙港-预制场/凤凰咀游客中心/凤凰咀博物馆）是 ISC/相机侧；
+  `docker stats` 瞬时 CPU 171~581%（告警转码/JPEG 突发），cgroup 30s 均值 ~240%（33 路解码，
+  VPU 已 100%）；`memory` 字段仍 0（未找到 bm heap 统计 API）。
+- **验证命令**：`docker inspect`、`/get_occupancy`、`/task/list`、`wsgrab.py`、`ffprobe`、
+  `find ... | wc -l`、`/sys/kernel/debug/dma_buf/bufinfo` 解析。
+
 ### 迭代 102 — 2026-11-18 — 整镜像切到 libsophon 0.5.1(SoC)+mw0.14 成功；ISC 会话缓存失效与协议钉死
 
 - **上一轮 0.5.1 混挂失败的真因（已定位并修正）**：用的是

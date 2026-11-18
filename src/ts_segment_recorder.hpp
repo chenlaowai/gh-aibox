@@ -38,7 +38,8 @@ public:
     TsSegmentRecorder& operator=(const TsSegmentRecorder&) = delete;
 
     bool start(int udp_port, std::string dir, int seg_seconds = 5, int keep = 8) {
-        stop();
+        std::lock_guard<std::mutex> life(life_mu_);
+        stop_locked();
         port_ = udp_port;
         dir_ = std::move(dir);
         seg_seconds_ = seg_seconds > 0 ? seg_seconds : 5;
@@ -64,10 +65,8 @@ public:
     }
 
     void stop() {
-        running_ = false;
-        if (thread_.joinable()) thread_.join();
-        std::lock_guard<std::mutex> lk(mu_);
-        if (file_.is_open()) file_.close();
+        std::lock_guard<std::mutex> life(life_mu_);
+        stop_locked();
     }
 
     bool running() const { return running_.load(); }
@@ -180,10 +179,27 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     std::mutex mu_;
+    // Serializes start()/stop() from the task thread and the status/watchdog
+    // thread. Two concurrent join() calls on the same std::thread used to throw
+    // std::system_error from the watchdog lambda -> std::terminate (SIGABRT).
+    std::mutex life_mu_;
     std::ofstream file_;
     std::string current_path_;
     int64_t seg_started_ms_ = 0;
     std::vector<Seg> segments_;
+
+    // Caller must hold life_mu_.
+    void stop_locked() {
+        running_ = false;
+        if (thread_.joinable()) {
+            if (thread_.get_id() == std::this_thread::get_id())
+                thread_.detach();  // stop() called from the recorder thread
+            else
+                thread_.join();
+        }
+        std::lock_guard<std::mutex> lk(mu_);
+        if (file_.is_open()) file_.close();
+    }
 };
 
 }  // namespace aidetect

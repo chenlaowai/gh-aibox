@@ -70,6 +70,36 @@ int main(int argc, char** argv) {
     if (cfg.jwt_secret.empty()) {
         log_warn("AIDETECT_JWT_SECRET is empty; all authenticated requests will be rejected");
     }
+    // Remove temp files left behind by a killed transcode/remux. Production has
+    // no persistent *.h264.tmp.mp4 litter; ours accumulated one per crash.
+    {
+        auto sweep = [](const std::string& root) {
+            if (root.empty()) return;
+            std::error_code ec;
+            if (!std::filesystem::exists(root, ec)) return;
+            std::filesystem::recursive_directory_iterator it(
+                root, std::filesystem::directory_options::skip_permission_denied, ec);
+            const auto cutoff = std::filesystem::file_time_type::clock::now() -
+                                std::chrono::minutes(10);
+            int removed = 0;
+            for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                if (it.depth() > 4) { it.disable_recursion_pending(); continue; }
+                if (!it->is_regular_file(ec)) continue;
+                const std::string n = it->path().filename().string();
+                if (n.find(".h264.tmp.mp4") == std::string::npos &&
+                    n.find(".limited.mp4") == std::string::npos &&
+                    n.find(".ts.keep") == std::string::npos)
+                    continue;
+                std::error_code te;
+                if (it->last_write_time(te) > cutoff || te) continue;
+                if (std::filesystem::remove(it->path(), te)) ++removed;
+            }
+            if (removed) log_info("cleaned " + std::to_string(removed) +
+                                  " stale alarm temp files under " + root);
+        };
+        sweep(cfg.data_root);
+        sweep(cfg.tmp_root);
+    }
     // A previous process may have left ffmpeg gateway children behind (they
     // were spawned through a shell and got reparented to init). They hold the
     // local UDP ports and ISC preview sessions, which is why a restarted AI

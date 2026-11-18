@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 102
+iteration: 103
 updated: 2026-11-18
 commit: -
 -->
@@ -10,14 +10,14 @@ commit: -
 
 ## 当前状态
 
-- **2026-11-18 迭代 102（SDK 对齐生产成功）**：容器已从 0.5.3/0.15 整镜像切到
-  **libsophon 0.5.1(SoC)+sophon-mw 0.14.0**（`aidetect:routeb051d`），JPU/OpenCV/ffmpeg/推理全链路
-  正常：36 任务 **33 ok**（ISC 修复部署后）、CPU 162~254%、告警视频 9.68s、
-  25K/龙港钢栈桥均有彩色预览、restarts=0。
-  关键坑：必须用 **`libsophon_soc_0.5.1`**（`/dev/jpu`），通用版走 `/dev/bm-sophon` 必崩；
-  0.5.1 bmrt 还需 **models 挂载可写**。ISC 侧改为「协议钉死 + 失败失效 previewURL 缓存」
-  （乙烯南路2/排水渠1/测试_18 已恢复）；剩 3 路 5XX（龙港-预制场等）属 ISC/相机侧。
-  详见 PROGRESS 迭代 102。
+- **2026-11-18 迭代 103（预览全灭根因修复 + 生产对齐第一批）**：
+  预览消失是 `Task::stop_gateway()` 被任务线程与 watchdog 线程**并发 join** → SIGABRT →
+  PID1 僵尸容器（`docker ps` Up 但不可 exec，只能重启盒子）。已用 recursive mutex + recorder
+  `life_mu_` 修复，并修掉解码器重建时的设备内存 churn（失败也释放、frame unref、先释放后创建、
+  `extra_frame_buffer_num=1`、200ms 节流）：dma-buf 对象稳定在 1288~1342、`bm_live_mb` 559~726、
+  RSS 1.01GB→trim 后 0.73~0.81GB、restarts=0。同时落地：设备侧 JPEG（`hw_jpeg_ok=17/0`）、告警视频
+  H.264/8.98s/≤20MB（pre=0.5×duration）、遥测 jpu/vpu/bm_live、子码流改显式开关、
+  预览 cap 只缩不放。详见 PROGRESS 迭代 103。
 
 - **2026-11-18 迭代 101**：修好 ≤1080p 通道预览空白（planar 拷贝）、标签/任务编号彩虹乱码（按行上传）、告警图掉色（planar→packed 读回）、告警视频窗口（现 10.83s，含前后各 5s）；设备 handle 改进程级共享后崩溃消失。SDK 已切 0.5.1+mw0.14 编译通过，但运行时混挂库会 abort，待整镜像替换。
 

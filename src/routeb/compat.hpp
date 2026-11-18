@@ -148,6 +148,31 @@ private:
 };
 
 // ---------------------------------------------------------------- BMImage
+// Live device-memory accounting. /get_occupancy exposes bm_live_mb, and a slow
+// upward slope here is the definitive signal for a device-memory leak (dmabuf
+// fd counts miss VPU-internal frame buffers).
+inline std::atomic<long long>& bm_live_bytes() {
+    static std::atomic<long long> v{0};
+    return v;
+}
+inline std::atomic<long long>& bm_alloc_count() {
+    static std::atomic<long long> v{0};
+    return v;
+}
+inline std::atomic<long long>& bm_free_count() {
+    static std::atomic<long long> v{0};
+    return v;
+}
+inline long long bm_live_mb() { return bm_live_bytes().load() / (1024 * 1024); }
+inline std::atomic<long long>& hw_jpeg_ok_count() {
+    static std::atomic<long long> v{0};
+    return v;
+}
+inline std::atomic<long long>& hw_jpeg_fail_count() {
+    static std::atomic<long long> v{0};
+    return v;
+}
+
 // Move-only owner of a bm_image.  Device memory is allocated contiguously, like
 // sail does, because bm_image_to_tensor needs one contiguous buffer.
 class BMImage {
@@ -206,11 +231,22 @@ public:
         if (bm_image_alloc_contiguous_mem_heap_mask(1, &img_, 6) != BM_SUCCESS)
             throw std::runtime_error("sail compat: bm_image_alloc_contiguous_mem failed");
         owns_ = true;
+        {
+            bm_device_mem_t mem{}; bm_image_get_device_mem(img_, &mem);
+            long long sz = static_cast<long long>(mem.size);
+            if (sz > 0) bm_live_bytes() += sz;
+            ++bm_alloc_count();
+        }
     }
     void destroy() {
         if (!created_) return;
         if (owns_ && is_created()) {
-            bm_image_free_contiguous_mem(1, &img_);
+            bm_device_mem_t mem{}; bm_image_get_device_mem(img_, &mem);
+            long long sz = static_cast<long long>(mem.size);
+            if (bm_image_free_contiguous_mem(1, &img_) == BM_SUCCESS) {
+                if (sz > 0) bm_live_bytes() -= sz;
+                ++bm_free_count();
+            }
             owns_ = false;
         }
         if (is_created()) {
@@ -532,9 +568,68 @@ public:
         return 0;
     }
     bool imencode(std::string& ext, BMImage& img, std::vector<unsigned char>& buf) {
+        // Production encodes preview/alarm JPEGs on the device
+        // (JpegEncoderInstance).  The JPU encoder only accepts NV12, so convert
+        // the drawn BGR canvas with VPP first and fall back to CPU OpenCV only
+        // if the hardware path is unavailable.  This is the single hot spot for
+        // preview, merge wall, alarm image and status images.
+        static const bool hw_jpeg = [] {
+            const char* v = std::getenv("AIDETECT_HW_JPEG");
+            return !(v && std::string(v) == "0");
+        }();
+        static const int quality = [] {
+            const char* v = std::getenv("AIDETECT_JPEG_QUALITY");
+            int q = v && *v ? std::atoi(v) : 90;
+            return q < 30 ? 30 : (q > 100 ? 100 : q);
+        }();
+        if (hw_jpeg && img.is_created()) {
+            bm_image nv12{};
+            bm_image* src = nullptr;
+            bool made = false;
+            if (img.format() == FORMAT_NV12) {
+                src = &img.data();
+            } else if (bm_image_create(handle_, img.height(), img.width(), FORMAT_NV12,
+                                       DATA_TYPE_EXT_1N_BYTE, &nv12, nullptr) == BM_SUCCESS) {
+                if (bm_image_alloc_contiguous_mem_heap_mask(1, &nv12, 6) == BM_SUCCESS) {
+                    if (bmcv_image_vpp_convert(handle_, 1, img.data(), &nv12, nullptr) ==
+                        BM_SUCCESS) {
+                        src = &nv12;
+                        made = true;
+                    }
+                }
+                if (!made) {
+                    bm_image_destroy(nv12);
+                    nv12 = {};
+                }
+            }
+            if (src) {
+                void* jpg = nullptr;
+                size_t jsz = 0;
+                bm_status_t rc =
+                    bmcv_image_jpeg_enc(handle_, 1, src, &jpg, &jsz, quality, 0);
+                if (rc == BM_SUCCESS && jpg && jsz > 0) {
+                    buf.assign(reinterpret_cast<unsigned char*>(jpg),
+                               reinterpret_cast<unsigned char*>(jpg) + jsz);
+                    std::free(jpg);
+                    ++hw_jpeg_ok_count();
+                    if (made) {
+                        bm_image_free_contiguous_mem(1, &nv12);
+                        bm_image_destroy(nv12);
+                    }
+                    return true;
+                }
+                ++hw_jpeg_fail_count();
+                if (jpg) std::free(jpg);
+                if (made) {
+                    bm_image_free_contiguous_mem(1, &nv12);
+                    bm_image_destroy(nv12);
+                }
+            }
+        }
         cv::Mat mat;
         if (bm_image_to_mat(img, mat) != 0 || mat.empty()) return false;
-        return cv::imencode(ext, mat, buf);
+        std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, quality};
+        return cv::imencode(ext, mat, buf, params);
     }
     BMImage imdecode(const void* data, size_t size) {
         cv::Mat raw(1, static_cast<int>(size), CV_8UC1, const_cast<void*>(data));
@@ -955,7 +1050,17 @@ public:
         for (int guard = 0; guard < 200; ++guard) {
             int ret = avcodec_receive_frame(cc_, frame_);
             if (ret == 0) {
-                int rc = frame_to_image(h, image);
+                int rc = -1;
+                // frame_to_image can throw when BMImage::allocate() cannot get
+                // device memory. Leaving the frame referenced in that case kept
+                // the VPU frame buffer alive until the next decoder recreation —
+                // exactly when memory is already tight, so the leak fed itself.
+                try {
+                    rc = frame_to_image(h, image);
+                } catch (...) {
+                    av_frame_unref(frame_);
+                    throw;
+                }
                 av_frame_unref(frame_);
                 if (rc != 0) continue;
                 return 0;
@@ -1026,22 +1131,50 @@ private:
             return;
         }
         av_dict_free(&opts);
-        if (avformat_find_stream_info(fmt_, nullptr) < 0) return;
+        // Every early return must release what was already opened: a decoder
+        // that fails after avformat_open_input used to keep fmt_ (and its UDP
+        // buffers) alive until the Task replaced the object. With 36 channels
+        // reconnecting this leaked 1-2 fds + packet buffers per attempt.
+        if (avformat_find_stream_info(fmt_, nullptr) < 0) { release_locked(); return; }
         int vs = av_find_best_stream(fmt_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-        if (vs < 0) return;
+        if (vs < 0) { release_locked(); return; }
         vs_ = vs;
         AVStream* st = fmt_->streams[vs];
         const char* want = st->codecpar->codec_id == AV_CODEC_ID_HEVC ? "hevc_bm" : "h264_bm";
         const AVCodec* dec = avcodec_find_decoder_by_name(want);
         if (!dec) dec = avcodec_find_decoder(st->codecpar->codec_id);
-        if (!dec) return;
+        if (!dec) { release_locked(); return; }
         cc_ = avcodec_alloc_context3(dec);
-        if (!cc_) return;
+        if (!cc_) { release_locked(); return; }
         avcodec_parameters_to_context(cc_, st->codecpar);
         cc_->thread_count = 1;
+        // Each bm decoder allocates (2 + display buffers) * frame_size of
+        // device memory. 4K frames are 5.3 MB each; with 36 channels the
+        // defaults (~85 MB/channel) plus reconnect overlap exhausted the VPU
+        // heap ("vdi_allocate_dma_memory fail"). One extra buffer is the
+        // supported minimum and halves the per-channel footprint.
+        if (cc_->priv_data) {
+            av_opt_set(cc_->priv_data, "extra_frame_buffer_num", "1", 0);
+            av_opt_set(cc_->priv_data, "output_format", "0", 0);
+        }
         codec_name_ = dec->name ? dec->name : "?";
+        // Smooth decoder creation: when 30+ channels reconnect after an ISC
+        // hiccup they all allocate VPU frame buffers within milliseconds, and
+        // the heap cannot satisfy the burst (vdi_allocate_dma_memory fail).
+        // Space opens at 200 ms; startup already staggers tasks by 1.2 s.
+        {
+            static std::mutex open_mu;
+            static int64_t last_open_ms = 0;
+            std::lock_guard<std::mutex> lk(open_mu);
+            const int64_t now = now_ms();
+            if (last_open_ms > 0 && now - last_open_ms < 200)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(200 - (now - last_open_ms)));
+            last_open_ms = now_ms();
+        }
         if (avcodec_open2(cc_, dec, nullptr) < 0) {
             avcodec_free_context(&cc_);
+            release_locked();
             return;
         }
         pkt_ = av_packet_alloc();
@@ -1142,6 +1275,11 @@ private:
         if (frame_) av_frame_free(&frame_);
         if (cc_) avcodec_free_context(&cc_);
         if (fmt_) avformat_close_input(&fmt_);
+        // The stride/format of the next stream may differ; an attached nv12_
+        // left behind would be reused with stale linesize and make every frame
+        // fail VPP conversion.
+        nv12_ = BMImage{};
+        nv12_created_ = false;
         opened_ = false;
         eof_ = false;
     }
@@ -1310,9 +1448,19 @@ inline int get_dev_id(int dev_id) { return dev_id; }
 
 inline int read_jpu_usage() {
     // /proc/jpuinfo exposes per-core "usage(short|long)": N% entries; the
-    // service only needs one aggregate number for /get_occupancy.
+    // service only needs one aggregate number for /get_occupancy. Opening the
+    // proc node is not free (the driver logs per open), so cache for 1 s: the
+    // Web UI polls /get_occupancy once per second per client.
+    static std::mutex mu;
+    static int64_t last_ms = 0;
+    static int last_val = -1;
+    std::lock_guard<std::mutex> lk(mu);
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    if (last_val >= 0 && now - last_ms < 1000) return last_val;
     FILE* f = fopen("/proc/jpuinfo", "r");
-    if (!f) return 0;
+    if (!f) return last_val < 0 ? 0 : last_val;
     char line[1024];
     int best = 0;
     while (fgets(line, sizeof(line), f)) {
@@ -1323,15 +1471,44 @@ inline int read_jpu_usage() {
         if (v > best) best = v;
     }
     fclose(f);
-    return std::min(100, best);
+    last_val = std::min(100, best);
+    last_ms = now;
+    return last_val;
+}
+// /proc/vpuinfo: {"core":[{"id":0,"link_num":..,"usage(instant|long)":70%|27%}...]}
+// Return per-core instant VPU usage, so /get_occupancy reports real numbers on
+// 0.5.1 (there is no /proc/tpuinfo on this kernel).
+inline std::vector<int> read_vpu_usage() {
+    static std::mutex mu;
+    static int64_t last_ms = 0;
+    static std::vector<int> last;
+    std::lock_guard<std::mutex> lk(mu);
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    if (!last.empty() && now - last_ms < 1000) return last;
+    std::vector<int> out;
+    FILE* f = fopen("/proc/vpuinfo", "r");
+    if (!f) return last;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        const char* p = strstr(line, "usage");
+        if (!p) continue;
+        while (*p && (*p < '0' || *p > '9')) ++p;
+        out.push_back(std::min(100, atoi(p)));
+        if (out.size() >= 3) break;
+    }
+    fclose(f);
+    if (!out.empty()) { last = out; last_ms = now; }
+    return last;
 }
 inline int get_tpu_util(int dev_id) {
     (void)dev_id;
-    return read_jpu_usage();
+    return 0;  // no userspace TPU-utilisation interface on this driver
 }
 inline std::vector<int> get_vpu_util(int dev_id) {
     (void)dev_id;
-    return {read_jpu_usage()};
+    return read_vpu_usage();
 }
 inline std::vector<int> get_vpp_util(int dev_id) {
     (void)dev_id;

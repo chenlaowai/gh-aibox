@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 102
+iteration: 103
 updated: 2026-11-18
 commit: -
 -->
@@ -9,6 +9,42 @@ commit: -
 > 两类都记：已知但暂不修的 bug，以及「看起来像 bug 其实是有意为之」的陷阱（后者更值钱）。
 
 ## 已知缺陷
+
+### KI-047 设备内存 churn：解码器重建重叠 + 失败路径不释放（vdi_allocate_dma_memory fail）
+
+- **现象**：连续跑数小时出现 `(vdi_allocate_dma_memory) fail to ... size=5529600`、
+  `AllocateDecFrameBuffer fail`、`bmvpu_dec_decode: the frame buffer count set is wrong`，
+  随后解码失败、重连风暴，最终在 `stop_gateway()` 崩溃（并发 join，见 KI-046）。
+- **确认归属**：停止容器后 `/sys/kernel/debug/dma_buf/bufinfo` 对象数 **1453 → 2**，说明这些
+  dma-buf 全是 aidetect 的；旧二进制启动 55s 即 996 个/29GB（虚拟），13 分钟 1487 个/54GB。
+- **三个放大器**（均已修）：
+  1. `make_shared<Decoder>` 赋值给旧 `shared_ptr` 时，新解码器先构造、旧的后析构 →
+     每路瞬时两份 ~85MB 帧缓冲；36 路同时重连就顶爆。
+  2. `open_locked()` 在 `find_stream_info/find_best_stream/avcodec_alloc/open` 失败时直接 return，
+     没有 `release_locked()`，已打开的 `fmt_` 直到对象替换才释放。
+  3. `frame_to_image()` 抛异常时 `av_frame_unref()` 被跳过，该帧 VPU 缓冲被 AVFrame 持住；
+     内存越紧越容易抛 → 正反馈。
+- **修复**：先 `decoder_.reset()` 再创建；所有失败路径 `release_locked()`；异常路径先 unref；
+  `extra_frame_buffer_num=1`；解码器开流全局 200ms 节流。
+- **观测方法**：`/get_occupancy` 的 `bm_live_mb`、`bm_alloc_n/free_n`、`hw_jpeg_ok/fail`
+  与 `/sys/kernel/debug/dma_buf/bufinfo` 对象数。稳定判据：`bm_live_mb` 不单调上涨、
+  dma-buf 对象数在 1300~1400 波动。参考：`src/routeb/compat.hpp`（Decoder/BMImage）。
+
+### KI-046 跨线程 `stop_gateway()` 并发 join → SIGABRT → PID1 僵尸容器
+
+- **现象**：Web 端所有预览突然全灭，`docker ps` 仍显示 `aidetect Up`，但
+  `docker exec` 报 `cannot exec a container that has stopped`、9000 无响应；
+  `docker restart`/`docker rm -f` 全部 hang，只能重启盒子（重启后容器还是 `Dead`）。
+- **根因**：`Task::stop_gateway()` 里 `seg_rec_.stop()`/`bridge_.stop()` 会 `join()` 自己的线程；
+  任务线程（开流/重连）与 status/watchdog 线程（45s 无帧、60s 无首帧、切子码流）会并发调用
+  → 同一 `std::thread` 被 join 两次 → `std::system_error` 在 watchdog lambda 里未捕获 →
+  `std::terminate` → SIGABRT。backtrace 固定为
+  `Task::stop_gateway → std::thread::join ← Task::start()::{lambda}`。
+- **修复**：`Task` 用 `std::recursive_mutex gateway_mu_` 串行化 start/stop；
+  `IngestBridge`/`TsSegmentRecorder`/`AlarmRingRecorder` 的 start/stop 加 `life_mu_`，
+  并在自身线程调用 stop 时 `detach()` 而不是 `join()`。
+- **注意**：崩溃后 PID1 变 `<defunct>` 是 docker 的已知老问题，不要反复 `docker restart`，
+  直接重启盒子后 `docker rm -f` 重建容器。
 
 ### KI-045 0.5.1 必须用 SoC 包 + models 可写（否则启动 abort 或 bmodel open failed）
 

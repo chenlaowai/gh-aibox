@@ -47,6 +47,8 @@ public:
 
     void start(const std::string& url, int pre_seconds, int post_seconds,
                int ring_margin_seconds = 5, int max_ring_mb = 32) {
+        std::lock_guard<std::mutex> life(life_mu_);
+        stop_locked();
         url_ = url;
         pre_ = std::max(1, pre_seconds);
         post_ = std::max(1, post_seconds);
@@ -57,9 +59,8 @@ public:
     }
 
     void stop() {
-        stop_ = true;
-        cv_.notify_all();
-        if (thread_.joinable()) thread_.join();
+        std::lock_guard<std::mutex> life(life_mu_);
+        stop_locked();
     }
 
     bool running() const { return running_; }
@@ -436,6 +437,20 @@ private:
     std::mutex req_mu_;
     std::condition_variable cv_;
     Req req_;
+    // Serializes start()/stop(); protects against two concurrent joins.
+    std::mutex life_mu_;
+
+    // Caller must hold life_mu_.
+    void stop_locked() {
+        stop_ = true;
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            if (thread_.get_id() == std::this_thread::get_id())
+                thread_.detach();
+            else
+                thread_.join();
+        }
+    }
 };
 
 }  // namespace aidetect
