@@ -31,6 +31,9 @@ commit: -
   **运行时混用失败**：把 0.14 库放 `/opt/bin/sdk` 用 DT_RPATH 覆盖容器 `LD_LIBRARY_PATH` 后，
   与容器内 0.15 的 OpenCV/FreeType 混用导致启动即 abort（SIGABRT，崩溃循环）。
   已回退（把 `/opt/bin/sdk` 改名禁用），服务恢复。**下一步：整镜像替换 `/opt/sophon-sdk` 为 0.5.1+0.14，而不是混挂库**。
+- **25K / 龙港钢栈桥 复验（15:39）**：两路均在出 `detect round`；龙港单通道预览 1280×720 **彩色**画面正常
+  （此前「没画面」是 ≤1080p 通道 planar 拷贝失败导致预览不排队，不是 ISC 取流问题）。
+  服务连续运行 3 分 32 秒 restarts=0、crashes=0、CPU 151%、RSS 944MB。
 - **SDK 回退（本轮结论）**：混挂 0.5.1/0.14 库会让进程 abort（曾崩溃循环 restarts=10）。已把 `env/env.sh`
   恢复 0.5.3/0.15.0、`/opt/bin/sdk` 改名停用；重建部署后 36 路运行 3 分钟 restarts=0、CPU 142%、RSS 943MB。
   真正对齐生产需**重建容器镜像**（把 `/opt/sophon-sdk` 整体换成 0.5.1+0.14），不能只靠 RPATH 混挂。
