@@ -5052,9 +5052,9 @@ private:
     int preview_interval_ms_ = 200;  // 5 fps, aligned with production (ADR-097)
     double src_fps_ = 0;
     double tokens_ = 1.0;
-    int64_t tile_interval_ms_ = 250;  // merge tile budget (4 Hz): 36 tasks at
-                                      // 8 Hz saturated the JPU and starved the
-                                      // 10 Hz merge wall / single preview.
+    int64_t tile_interval_ms_ = 400;  // merge tile budget (2.5 Hz): keeps the
+                                      // active wall's 9 tiles at ~22 codings/s
+                                      // so the 10 Hz wall still fits the JPU.
     double tile_tokens_ = 1.0;
     int64_t tile_last_token_ms_ = 0;
     int64_t last_token_ms_ = 0;
