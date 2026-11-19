@@ -19,7 +19,7 @@ commit: -
   288 条，合流 black/no_task 8 条，共 ~290。
 - **修复**：标签牌改 `HostMat`（host `std::vector<unsigned char>` + 临时 `cv::Mat` 视图）；
   合流 black/no_task/fallback 画布改 host buffer；`no_task` 不再 `cv::imread`。
-  结果：**映射 0、dma-buf fd 0**、总 fd 589（34 路）。
+  结果：**映射 0**、dma-buf fd 328（9.6/路，生产 13.5/路）、总 fd 617（34 路）。
 - **坑**：把 `Bmcv::imencode` 的 NV12 转换图改成 per-instance BMImage 复用时，运行约 3 分钟
   出现 `*** stack smashing detected ***`；已回退为每次新建。不要在未验证生命周期前复用 bm_image。
 - 注意：`/sys/kernel/debug/dma_buf/bufinfo` 里仍有 ~1100 个对象（解码器/模型内部），这是内核对象，
@@ -31,7 +31,7 @@ commit: -
   当时误判为解码器帧缓冲/attach 内存造成。
 - 迭代 106 用 `LD_PRELOAD` 抓 mmap 调用栈，定位真正来源是 **Sophon OpenCV 的 `cv::Mat`
   （bmcv/ion 分配）**：每任务标签牌 ~8×36=288 条 + 合流占位图 8 条 = 290。改 HostMat/host buffer 后
-  **映射 0、dma-buf fd 0**（详见 KI-050），解码器/模型只剩内核 dma-buf 对象、不做进程 mmap。
+  **映射 0**（dma-buf fd 仍 328，解码器/模型库内部），内核 dma-buf 对象仍在、但不做进程 mmap。
 - 结论：当初“不换解码栈无法归零”的判断是错的；正确做法是不在稳态路径分配 cv::Mat。
 
 ### KI-048 VPU core 楔死：部分 RTSP/MP4 任务“有流但解不出帧”
