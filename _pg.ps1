@@ -1,7 +1,0 @@
-$p='src\task.hpp'; $t=[IO.File]::ReadAllText($p)
-$t=$t.Replace('preview_prev_gray_, gray, t.pts, np, st, er','prev_gray, gray, t.pts, np, st, er')
-$t=$t.Replace('gray, preview_prev_gray_, np, back, bst, ber','gray, prev_gray, np, back, bst, ber')
-$t=$t.Replace('cv::Rect(0, 0, preview_prev_gray_.cols,','cv::Rect(0, 0, prev_gray.cols,')
-$t=$t.Replace('preview_prev_gray_.rows);','prev_gray.rows);')
-$t=$t.Replace('cv::matchTemplate(gray(search), preview_prev_gray_(tmpl_rect),','cv::matchTemplate(gray(search), prev_gray(tmpl_rect),')
-[IO.File]::WriteAllText($p,$t)

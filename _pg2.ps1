@@ -1,7 +1,0 @@
-$p='src\task.hpp'; $t=[IO.File]::ReadAllText($p)
-$t=$t.Replace('            preview_prev_gray_.release();','            preview_prev_gray_buf_.clear();`r`n            preview_prev_gray_w_ = preview_prev_gray_h_ = 0;')
-$old='        preview_prev_gray_ = gray;'
-$new='        if (gray.isContinuous()) {`r`n            preview_prev_gray_buf_.assign(gray.data,`r`n                                       gray.data + gray.total() * gray.elemSize());`r`n        } else {`r`n            preview_prev_gray_buf_.resize(gray.total() * gray.elemSize());`r`n            for (int y = 0; y < gray.rows; ++y)`r`n                std::memcpy(preview_prev_gray_buf_.data() + static_cast<size_t>(y) * gray.cols,`r`n                            gray.ptr(y), static_cast<size_t>(gray.cols));`r`n        }`r`n        preview_prev_gray_w_ = gray.cols;`r`n        preview_prev_gray_h_ = gray.rows;'
-$t=$t.Replace($old,$new)
-$t=$t.Replace('    cv::Mat preview_prev_gray_;','    std::vector<unsigned char> preview_mat_buf_;`r`n    std::vector<unsigned char> preview_gray_buf_;`r`n    std::vector<unsigned char> preview_prev_gray_buf_;`r`n    int preview_prev_gray_w_ = 0;`r`n    int preview_prev_gray_h_ = 0;`r`n    cv::Mat preview_prev_view() const {`r`n        if (preview_prev_gray_buf_.empty()) return cv::Mat();`r`n        return cv::Mat(preview_prev_gray_h_, preview_prev_gray_w_, CV_8UC1,`r`n                       const_cast<unsigned char*>(preview_prev_gray_buf_.data()));`r`n    }')
-[IO.File]::WriteAllText($p,$t)
