@@ -328,7 +328,7 @@ private:
                 // Production's bm_merger_cpu composes on a fixed 100ms tick even
                 // when no tile changed; gating on "dirty" made the wall inherit
                 // the preview tile rate (~4fps) instead of 10fps.
-                groups_[g].cv.wait_for(lk, std::chrono::milliseconds(100),
+                groups_[g].cv.wait_for(lk, std::chrono::milliseconds(5),
                                        [this] { return stop_.load(); });
                 if (stop_) break;
                 groups_[g].dirty = false;

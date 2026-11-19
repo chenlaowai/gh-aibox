@@ -71,6 +71,8 @@ inline std::mutex& jpeg_hw_mutex() {
     return m;
 }
 
+
+
 // ISC previewURL requests are serialized to avoid a 30-task startup burst
 // overwhelming the identity server.
 inline std::mutex& isc_resolve_mutex() {
