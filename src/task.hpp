@@ -53,6 +53,31 @@ using SinglePreviewCallback = std::function<void(const std::string& task_id,
 using DemandCallback = std::function<bool()>;
 using AlarmCallback = std::function<void(const std::string& task_id,
                                          const Json& report)>;
+// Host-backed image cache.  Sophon OpenCV's cv::Mat uses the bmcv/ion dma-buf
+// allocator, so keeping the per-task Chinese label plates as cv::Mat pinned one
+// dma-buf mapping per plate (36 tasks x ~8 plates = the fixed ~290 mappings).
+// Store pixels in a plain std::vector and wrap them with cv::Mat only when a
+// caller needs a view.
+struct HostMat {
+    std::vector<unsigned char> buf;
+    int w = 0, h = 0;
+    bool empty() const { return buf.empty(); }
+    cv::Mat view() const {
+        if (buf.empty()) return cv::Mat();
+        return cv::Mat(h, w, CV_8UC3, const_cast<unsigned char*>(buf.data()));
+    }
+    static HostMat from(const cv::Mat& m) {
+        HostMat hm;
+        if (m.empty() || m.channels() != 3) return hm;
+        hm.w = m.cols;
+        hm.h = m.rows;
+        hm.buf.resize(static_cast<size_t>(hm.w) * hm.h * 3);
+        for (int y = 0; y < hm.h; ++y)
+            std::memcpy(hm.buf.data() + static_cast<size_t>(y) * hm.w * 3,
+                        m.ptr(y), static_cast<size_t>(hm.w) * 3);
+        return hm;
+    }
+};
 class Task {
 public:
     Task(TaskConfig cfg, int group, int slot, AppConfig app, ModelScheduler& scheduler,
@@ -230,7 +255,7 @@ public:
                     std::string file = e.value("file", "");
                     if (text.empty() || file.empty()) continue;
                     cv::Mat m = cv::imread(label_dir + "/" + file);
-                    if (!m.empty()) label_plates_[text] = m;
+                    if (!m.empty()) label_plates_[text] = HostMat::from(m);
                 }
                 loaded_manifest = !label_plates_.empty();
                 log_info(cfg_.task_id + " label plates from manifest=" +
@@ -245,7 +270,7 @@ public:
                                               "未穿安全帽", "抽烟", "人员"};
             for (size_t i = 0; i < names.size(); ++i) {
                 cv::Mat m = cv::imread(label_dir + "/label_" + std::to_string(i) + ".png");
-                if (!m.empty()) label_plates_[names[i]] = m;
+                if (!m.empty()) label_plates_[names[i]] = HostMat::from(m);
             }
         }
         // Safety net for a label that is not in the manifest yet (e.g. a new
@@ -290,7 +315,7 @@ public:
             int x1 = std::min(canvas.cols, bb.x + bb.width + pad_x);
             int y1 = std::min(canvas.rows, bb.y + bb.height + pad_y);
             cv::Mat m = canvas(cv::Rect(x0, y0, x1 - x0, y1 - y0)).clone();
-            label_plates_[text] = m;
+            label_plates_[text] = HostMat::from(m);
             log_info(cfg_.task_id + " label plate rendered: " + text + " " +
                      std::to_string(m.cols) + "x" + std::to_string(m.rows));
         } catch (const std::exception& e) {
@@ -2161,8 +2186,7 @@ private:
             sail::Bmcv::bm_image_to_mat(bgr, mat);
         }
         return mat.clone();
-    }
-    void draw_roi_cv(cv::Mat& canvas) {
+    }    void draw_roi_cv(cv::Mat& canvas) {
         std::vector<std::vector<std::pair<float, float>>> rois;
         {
             std::lock_guard<std::mutex> lk(roi_mu_);
@@ -2267,7 +2291,7 @@ private:
             int bh = static_cast<int>((d.y2 - d.y1) * sy);
             auto plate_it = label_plates_.find(d.label);
             if (plate_it != label_plates_.end()) {
-                cv::Mat cls = plate_it->second;
+                cv::Mat cls = plate_it->second.view();
                 int bw = cls.cols;
                 int bh = cls.rows;
                 cv::Mat badge = cls;
@@ -3933,21 +3957,33 @@ private:
     std::shared_ptr<sail::BMImage> plate_bm(const std::string& label, int target_h) {
         auto src = label_plates_.find(label);
         if (src == label_plates_.end() || src->second.empty()) return nullptr;
+        // One device plate per (label,size) for the whole process: a per-task
+        // cache duplicated the same label image 36x (~180 extra dma-buf fds).
+        static std::mutex cache_mu;
+        static std::map<std::string, std::shared_ptr<sail::BMImage>> cache;
         std::string key = label + "#" + std::to_string(target_h);
-        auto it = plate_cache_.find(key);
-        if (it != plate_cache_.end()) return it->second;
-        double s = std::min(1.0, static_cast<double>(target_h) / 1080.0);
-        cv::Mat m;
-        if (s < 0.999) {
-            int w = std::max(8, static_cast<int>(src->second.cols * s));
-            int h = std::max(8, static_cast<int>(src->second.rows * s));
-            cv::resize(src->second, m, cv::Size(w, h));
-        } else {
-            m = src->second;
+        {
+            std::lock_guard<std::mutex> lk(cache_mu);
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second;
         }
-        auto bm = std::make_shared<sail::BMImage>(sail::Bmcv::mat_to_bm_image(m));
-        plate_cache_[key] = bm;
-        return bm;
+        double s = std::min(1.0, static_cast<double>(target_h) / 1080.0);
+        cv::Mat srcm = src->second.view();
+        if (srcm.empty()) return nullptr;
+        sail::Bmcv bmcv(sail::Bmcv::static_handle());
+        sail::BMImage base = sail::Bmcv::mat_to_bm_image(srcm);
+        std::shared_ptr<sail::BMImage> bm;
+        if (s < 0.999) {
+            int w = std::max(8, static_cast<int>(srcm.cols * s));
+            int h = std::max(8, static_cast<int>(srcm.rows * s));
+            bm = std::make_shared<sail::BMImage>(
+                bmcv.vpp_resize(base, w, h, bmcv_resize_algorithm::BMCV_INTER_LINEAR));
+        } else {
+            bm = std::make_shared<sail::BMImage>(std::move(base));
+        }
+        std::lock_guard<std::mutex> lk(cache_mu);
+        auto it = cache.emplace(key, bm).first;
+        return it->second;
     }
     std::vector<unsigned char> render_preview_fast(sail::BMImage& frame, sail::Bmcv& bmcv,
                                                    int tw, int th,
@@ -5095,7 +5131,7 @@ private:
     // AIDETECT_PROFILE: periodic detection/preview counters used to attribute
     // multi-task lag (detect round time, snapshot age, drawn boxes).
     int64_t last_prof_ms_ = 0;
-    std::map<std::string, cv::Mat> label_plates_;
+    std::map<std::string, HostMat> label_plates_;
     std::map<std::string, std::shared_ptr<sail::BMImage>> plate_cache_;
     // Normalized 0..1 ROI polygons from TaskAlgoConfigDetail (taskArea),
     // deduplicated across algorithms.  Production draws them as green lines

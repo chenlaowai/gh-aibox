@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 105
+iteration: 106
 updated: 2026-11-19
 commit: -
 -->
@@ -10,18 +10,29 @@ commit: -
 
 ## 已知缺陷
 
-### KI-049 dma-buf 映射/fd 无法归零（解码器选型差异，不是重连 bug）
+### KI-050 Sophon OpenCV 的 cv::Mat 走 bmcv/ion dma-buf（已用 host buffer 规避）
 
-- 生产进程 **0 dma-buf 映射 / 135 个 dma-buf fd**（`/proc/<pid>/maps` 无 dmabuf），bufinfo 对象 593；
-  我方 34 路有画面时 **290 映射 / 450 fd**、bufinfo 对象 1237。
-- **自有图像分配已对齐**：`BMImage::allocate()` 改为 `bm_malloc_device_byte + bm_image_attach`
-  （调用方管理连续设备内存），不再给每个 bm_image 开 dma-buf fd；dmabuf fd 644→450、
-  对象 2155→1237、总 fd 930→713。
-- 剩余映射/fd 来自 **sophon-ffmpeg 的 h264_bm/hevc_bm 解码器帧缓冲**：库内部用
-  `bm_image` 的 dma-buf 堆分配（`dectest` 单解码器进程 0 映射，量级 = 解码上下文数 × ~13）。
-  生产用闭源 media_sdk `DecodeInstance`，分配 dma-buf 但**不做进程 mmap**；我方 290 个映射为库内固定 mmap（不随路数增长），**要归零需消除库内 mmap，暂未定位到开关**。
-- 重要：这是**实现差异不是泄漏**——对象/映射/ fd 数在 30 分钟 soak 中稳定，
-  且按每路有画面归一化（对象 36.4 vs 生产 59.3、fd 21.0 vs 41.7）我方更低。
+- **现象**：进程 dma-buf 映射固定 ~290，不随任务/画面数变化；`LD_PRELOAD` 拦截 `mmap` 显示调用栈
+  为 `cv::Mat::create` ← `Aggregator::loop` / 任务渲染。
+- **根因**：Sophon OpenCV（libopencv_core.so.4.1，链接 bmcv/bmion）的 `cv::Mat` 分配器用 bmcv/ion；
+  每个 Mat 对应一条 dma-buf 映射，OpenCV 内存池把释放块留在进程里。每任务标签牌 ~8 张 ×36 =
+  288 条，合流 black/no_task 8 条，共 ~290。
+- **修复**：标签牌改 `HostMat`（host `std::vector<unsigned char>` + 临时 `cv::Mat` 视图）；
+  合流 black/no_task/fallback 画布改 host buffer；`no_task` 不再 `cv::imread`。
+  结果：**映射 0、dma-buf fd 0**、总 fd 589（34 路）。
+- **坑**：把 `Bmcv::imencode` 的 NV12 转换图改成 per-instance BMImage 复用时，运行约 3 分钟
+  出现 `*** stack smashing detected ***`；已回退为每次新建。不要在未验证生命周期前复用 bm_image。
+- 注意：`/sys/kernel/debug/dma_buf/bufinfo` 里仍有 ~1100 个对象（解码器/模型内部），这是内核对象，
+  不等于进程映射；生产同样有 593 个对象、135 个 fd。
+
+### KI-049 dma-buf 映射原先无法归零（迭代 106 已解决）
+
+- 迭代 105 时：生产 0 映射 / 135 dma-buf fd；我方 34 路时 290 映射 / 586 fd，bufinfo 对象 1398。
+  当时误判为解码器帧缓冲/attach 内存造成。
+- 迭代 106 用 `LD_PRELOAD` 抓 mmap 调用栈，定位真正来源是 **Sophon OpenCV 的 `cv::Mat`
+  （bmcv/ion 分配）**：每任务标签牌 ~8×36=288 条 + 合流占位图 8 条 = 290。改 HostMat/host buffer 后
+  **映射 0、dma-buf fd 0**（详见 KI-050），解码器/模型只剩内核 dma-buf 对象、不做进程 mmap。
+- 结论：当初“不换解码栈无法归零”的判断是错的；正确做法是不在稳态路径分配 cv::Mat。
 
 ### KI-048 VPU core 楔死：部分 RTSP/MP4 任务“有流但解不出帧”
 

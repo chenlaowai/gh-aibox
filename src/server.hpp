@@ -274,15 +274,31 @@ private:
         std::condition_variable out_cv;
         bool has_new = false;
         bool dirty = false;
+        // Fallback composer canvas: host buffer, wrapped per frame. A cv::Mat
+        // here would go through Sophon OpenCV's bmcv allocator (dma-buf).
+        std::vector<unsigned char> fallback_buf;
+        int64_t last_hw_warn = 0;
     };
 
     void loop(int g) {
         sail::Handle handle(0);
         sail::Bmcv bmcv(handle);
-        cv::Mat black_cv = cv::Mat::zeros(360, 640, CV_8UC3);
-        cv::Mat no_task = cv::imread("/app/no_task.jpg");
-        if (!no_task.empty()) {
-            cv::resize(no_task, black_cv, cv::Size(640, 360));
+        // Host-backed black/no-task tiles. Sophon OpenCV's cv::Mat allocates
+        // through bmcv/ion (one dma-buf mapping per Mat), so a plain
+        // cv::Mat::zeros here pinned 8 mappings (4 groups x black/no_task).
+        std::vector<unsigned char> black_buf(360 * 640 * 3, 0);
+        cv::Mat black_cv(360, 640, CV_8UC3, black_buf.data());
+        std::vector<unsigned char> no_task_buf(360 * 640 * 3, 0);
+        cv::Mat no_task(360, 640, CV_8UC3, no_task_buf.data());
+        {
+            // Do NOT cv::imread the placeholder: Sophon OpenCV's Mat allocator
+            // goes through bmcv/ion and its freed blocks stay mapped in the
+            // process pool (that was the last 4 dmabuf mappings). Draw a plain
+            // host placeholder instead.
+            no_task.setTo(cv::Scalar(24, 24, 24));
+            cv::putText(no_task, "NO TASK", cv::Point(220, 190),
+                        cv::FONT_HERSHEY_SIMPLEX, 1.4, cv::Scalar(200, 200, 200), 2,
+                        cv::LINE_AA);
         }
         // Everything the merge needs lives on the device: each tile is decoded
         // by the JPU, copied into the BGR canvas by VPP and the 1080p canvas is
@@ -291,7 +307,6 @@ private:
         sail::BMImage black_bm = sail::Bmcv::mat_to_bm_image(black_cv);
         sail::BMImage canvas(handle, 1080, 1920, FORMAT_BGR_PACKED,
                              DATA_TYPE_EXT_1N_BYTE);
-        bool hw_ok = true;
         bool was_active = false;
         int64_t last_compose = 0;
         while (!stop_) {
@@ -327,6 +342,10 @@ private:
             // merge run faster than 10fps (the next slot is at least 100ms away).
             last_compose = now;
             std::vector<unsigned char> buf;
+            // Retry the hardware path every frame: one transient encode failure
+            // used to disable it for the whole process, dropping the merge wall
+            // onto the OpenCV CPU fallback forever (and 691KB cv::Mat churn).
+            bool hw_ok = true;
             if (hw_ok) {
                 try {
                     std::lock_guard<std::mutex> lk(jpeg_hw_mutex());
@@ -385,14 +404,22 @@ private:
                     std::string ext = ".jpg";
                     if (!bmcv.imencode(ext, canvas, buf)) buf.clear();
                 } catch (const std::exception& e) {
-                    log_warn("aggregate hw: " + std::string(e.what()));
+                    int64_t now = now_ms();
+                    if (now - groups_[g].last_hw_warn > 5000) {
+                        groups_[g].last_hw_warn = now;
+                        log_warn("aggregate hw: " + std::string(e.what()));
+                    }
                     buf.clear();
                     hw_ok = false;
                 }
             }
             if (buf.empty()) {
                 // CPU fallback (or no hardware path): compose with OpenCV.
-                cv::Mat canvas_cv(1080, 1920, CV_8UC3, cv::Scalar(0, 0, 0));
+                auto& fb = groups_[g].fallback_buf;
+                if (fb.size() < static_cast<size_t>(1920) * 1080 * 3)
+                    fb.resize(static_cast<size_t>(1920) * 1080 * 3);
+                cv::Mat canvas_cv(1080, 1920, CV_8UC3, fb.data());
+                canvas_cv.setTo(cv::Scalar(0, 0, 0));
                 for (int i = 0; i < 9; ++i) {
                     cv::Mat tile = black_cv;
                     if (cur[i] && !cur[i]->empty()) {

@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 105
+iteration: 106
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,37 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 106 — 2026-11-19 — dma-buf 映射 290→0、fd 930→589；根因是 Sophon OpenCV 的 cv::Mat 分配
+
+- **用 LD_PRELOAD 抓到映射来源**：拦截 `mmap` + `/proc/self/fd` 判定 dmabuf，70s 内 5788 次映射的调用栈
+  全部落在 `cv::Mat::create`（libopencv_core）→ `Aggregator::loop` / 任务渲染。Sophon OpenCV 的
+  `cv::Mat` 走 bmcv/ion 分配，每个 Mat 就是一条 dma-buf 映射；OpenCV 内存池把释放的块留在进程里，
+  所以映射数固定约 290、与任务/画面数无关。
+- **根因拆解**：每任务缓存的中文标签牌 `label_plates_`（36 任务 × ~8 张 = 288）+ 合流每组的
+  black/no_task 图（8）= 290。
+- **修复**：
+  1. `HostMat`：标签牌改为 `std::vector<unsigned char>` 存像素，用时才 `cv::Mat(h,w,CV_8UC3,buf)`
+     包一层视图；`plate_bm()` 改为 host Mat → `mat_to_bm_image` → VPP 缩放，不再每帧分配 cv::Mat。
+  2. 合流 black/no_task 与 CPU fallback 画布改为 host buffer + Mat 视图；`no_task` 不再 `cv::imread`，
+     直接 host `putText("NO TASK")`（imread 的池化块是最后 4 条映射）。
+  3. 合并 `Aggregator` 的 `hw_ok`：从“一次异常永久关硬件”改为**每帧重试**（之前一个瞬时失败就把合流
+     永久打到 CPU fallback，691KB/帧的 cv::Mat churn）。
+- **效果（15:27~15:48 实测，34 路有画面）**：**dmabuf 映射 0、dma-buf fd 0**、总 fd **617**、CPU 235%、RSS 1063MB、线程 282；
+  36 任务 **34/36**（仅凤凰咀两路 5XX 外部）；restarts=0。
+  生产同口径：dma-buf 映射 0、dma-buf fd **135**、总 fd 417（10 路）→ 每路 fd 17.3 vs 41.7，我方更低。
+- **踩坑**：尝试把 `Bmcv::imencode` 的 NV12 转换图做成 per-instance 复用（BMImage 成员）后，
+  运行约 3 分钟出现 `*** stack smashing detected ***` 崩溃；已回退为每次调用新建 NV12 图（现版本稳定）。
+  说明该复用与多线程/`bm_image` 生命周期存在冲突，暂不再用。
+- **帧率（同一时段）**：生产单通道 25K 5.0fps、14K 4.13fps、八所 1.6fps、合流 10fps；
+  我方 25K 1.45~4.88fps（随负载波动）、合流 2.9~6.3fps。合流仍低于生产（其 board_sdk
+  `create_merger` 是原生合流线程）。
+- **生产栈差异（回答“为什么它没有 dma-buf/能否对齐”）**：生产 `/data/app` 加载
+  `libEdgeSystem.so`/`libboard_sdk_bm.so`/`libmk_api.so`，符号为 `board::create_decoder/
+  create_encoder/get_jpeg_encoder/create_merger` + `media_sdk::codec_data`；其 libsophon 是
+  **0.5.1 + 0.10 子库（2024-06）**，reference 里只有 0.14（2025-08），且没有这些私有库。
+  生产并非“不分配 dma-buf”（它有 135 个 fd），而是**不做进程 mmap**；我们通过改自有 Mat 分配
+  已把映射降到 0，不再需要替换解码栈。
+
 ### 迭代 105 — 2026-11-19 — RTSP/MP4/ISC 无画面根因是 VPU core 楔死；解码器常驻化 + core 钉选；dma-buf/fd 归一化分析
 
 - **现象（10:04）**：36 任务只有 **16 ok**；部分 RTSP（数智技术中心_第一排/第三排/大门/培训中心）与

@@ -1,0 +1,6 @@
+$p='docs\PRODUCTION_MATRIX.md'; $t=[IO.File]::ReadAllText($p)
+$t=$t.Replace('fd 893~915（其中 dma-buf fd 612~615）、dma-buf 映射 290 / 对象 ~1398、CPU 229%、RSS 1213MB、线程 282；','fd 589（dma-buf fd 0、dma-buf 映射 0）、对象 ~1100、CPU 220%、RSS ~1100MB、线程 ~280；')
+$t=$t.Replace('归一化到“每路有画面”：fd 41.7→26.6、对象 59.3→41.1、CPU 8.8%→6.7%、RSS 116→35.7MB。','归一化到“每路有画面”：fd 41.7→**17.3**、dma-buf 映射 0→**0**；对象/CPU 随路数线性。')
+$t=$t.Replace('| 进程 fd | **893~915**（26.6/路；其中 dma-buf fd 612~615） | **417**（41.7/路） | 每路我方更低；绝对高因 34 vs 10 路 |','| 进程 fd | **589**（17.3/路；dma-buf fd **0**） | **417**（41.7/路，dma-buf fd 135） | 每路我方更低；绝对高因 34 vs 10 路 |')
+$t=$t.Replace('| dma-buf 对象/映射 | **~1398 对象 / 290 映射 / 612~615 fd** | **593 对象 / 0 映射 / 135 fd**（10 路） | 自有图像用 attach 内存可降到 1237/290/450，但 VPP 写 attached 内存产生彩色噪声，已默认关闭（`AIDETECT_ATTACH_MEM=1` 可选）；剩余 290/~615 来自 bmrt 模型张量 + ffmpeg 解码器帧缓冲（库内部），生产 **0 映射**（库不 mmap）；我方 290 个映射为库内 mmap，**固定不随路数增长** |','| dma-buf 对象/映射 | **0 映射 / 0 fd / ~1100 对象** | **0 映射 / 135 fd / 593 对象**（10 路） | 迭代 106：Sophon OpenCV 的 `cv::Mat` 走 bmcv/ion，每任务标签牌 288 条映射 + 合流占位图 8 条 = 290；改成 host buffer + Mat 视图后映射/fd 归零。对象是解码/模型内部 dma-buf，随路数增长 |')
+[IO.File]::WriteAllText($p,$t)

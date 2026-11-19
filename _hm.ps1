@@ -1,0 +1,6 @@
+$p='src\task.hpp'; $t=[IO.File]::ReadAllText($p)
+$t=$t.Replace('if (!m.empty()) label_plates_[text] = m;','if (!m.empty()) label_plates_[text] = HostMat::from(m);')
+$t=$t.Replace('if (!m.empty()) label_plates_[names[i]] = m;','if (!m.empty()) label_plates_[names[i]] = HostMat::from(m);')
+$t=$t.Replace('label_plates_[text] = m;','label_plates_[text] = HostMat::from(m);')
+$t=$t.Replace('cv::Mat cls = plate_it->second;','cv::Mat cls = plate_it->second.view();')
+[IO.File]::WriteAllText($p,$t)

@@ -710,8 +710,7 @@ public:
                     bm_image_destroy(nv12);
                 }
             }
-        }
-        cv::Mat mat;
+        }        cv::Mat mat;
         if (bm_image_to_mat(img, mat) != 0 || mat.empty()) return false;
         std::vector<int> params{cv::IMWRITE_JPEG_QUALITY, quality};
         return cv::imencode(ext, mat, buf, params);

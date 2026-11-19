@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 105
+iteration: 106
 updated: 2026-11-19
 commit: -
 -->
@@ -10,6 +10,11 @@ commit: -
 
 ## 当前状态
 
+- **2026-11-19 迭代 106（dma-buf 映射归零）**：定位到 Sophon OpenCV 的 `cv::Mat` 每个都走
+  bmcv/ion dma-buf；把每任务标签牌（36×8=288 条）改成 HostMat、合流 black/no_task 与 fallback
+  画布改 host buffer 后，**dmabuf 映射 290→0、dma-buf fd 586→0**、总 fd 930→589（34 路）。
+  生产同口径 0 映射/135 fd/417 fd（10 路），每路 fd 41.7 vs 17.3，我方更低。
+  期间发现 imencode 的 NV12 复用会触发 stack smashing，已回退。
 - **2026-11-19 迭代 105（部分 RTSP/MP4/ISC 无画面根因）**：根因是 **VPU core1 楔死**
   （core0 16 links 占满、core1 仅 4 且新解码器报 `pkt can't be sent ret=-2`），不是取流。
   重启盒子后 **34/36 有画面**（仅凤凰咀两路 5XX 属外部）。修复：解码器按 taskId 钉 VPU core
