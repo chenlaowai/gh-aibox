@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 110
+iteration: 111
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,17 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 111 — 2026-11-19 — 完成 libEdgeSystem 关键函数反编译（符号名定位）
+
+- 新增 `DecompileNamed.java`：在 Ghidra no-analysis 模式下按 mangled 符号名定位（镜像基址 =
+  符号地址 + 0x100000），`disassemble+createFunction` 后反编译，成功产出：
+  - `MJpegInstance::loop`、`MergeInstance::onMergeFinished`、`MergeInstance::onChannelImageArrived`。
+- `onMergeFinished` 反编译显示：同一帧按参数分发给两个输出实例（成员函数指针调用），再走每通道
+  回调，与 `board_sdk bm_merger_cpu` 的回调链一致 —— 生产墙的 JPEG 编码/推流在独立输出实例里，
+  不是墙线程同步编码。
+- 产物：`.work/re/edge_decompiled.c`（另 `board_decompiled.c`、`REPORT.md`、符号/导入表、asm）。
+- 逆向目标 ① 已完成；②③ 的 8fps/5fps 目标仍受 JPU 编码预算（1080p 29ms/次）限制，未达成。
+
 ### 迭代 110 — 2026-11-19 — 720p 墙实验（3.96fps）后服务级 VPU 停摆，回滚 109；109 复测墙 4.68fps
 
 - **720p 墙实验**：合流 host 1080p 画布 `cv::resize` 到 1280×720（host 外置缓冲）→ 单次 H2D →
