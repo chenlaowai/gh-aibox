@@ -35,23 +35,23 @@ commit: -
   | 指标 | 生产（10 有画面 / 21 任务） | 我方（34 有画面 / 36 任务） | 每路归一化（生产 vs 我方） |
   |---|---|---|---|
   | 进程 fd | 417 | **893~915** | 41.7 vs **26.6** |
-  | dma-buf fds | 0 | **612~615** | 0 vs 18.1 |
-  | dma-buf 映射 | 0 | **290** | 0 vs 8.5 |
+  | dma-buf fds | **135**（13.5/路） | **612~615**（18.1/路） | 13.5 vs 18.1 |
+  | dma-buf 映射 | **0** | **290（固定，与路数无关）** | 0 vs 8.5 |
   | dma-buf 对象（bufinfo） | 593 | **~1398** | 59.3 vs **41.1** |
   | 线程 | 1020 | **282** | 102 vs 8.3 |
   | RSS | 1158 MB | **1213 MB** | 116 vs 35.7 MB |
   | CPU | 88% | **229%** | 8.8% vs **6.7%** |
   结论：**fd/CPU/dma-buf 对象都随“有画面路数”线性增长**；按每路归一化，我方 fd/对象/RSS/CPU
   都低于生产，绝对数高是因为我们有 34 路有画面（生产 10 路）。
-  dma-buf 归零只能去掉我们自己的图像分配：已实现 `BMImage` 的
+  dma-buf 映射归零只能去掉我们自己的图像分配：已实现 `BMImage` 的
   **`bm_malloc_device_byte` + `bm_image_attach`** 路径（`AIDETECT_ATTACH_MEM=1` 可选），
   实测 dmabuf fd 644→450、对象 2155→1237、总 fd 930→713；**但 VPP 写 attached 内存会让
   预览画布/合流瓦片出现彩色噪声条纹（视觉验收发现）**，因此默认关闭、回退到连续堆分配。
-  剩余 290 个映射/~615 个 fd 来自 **bmrt 模型/张量 + sophon-ffmpeg 解码器帧缓冲**
-  （库内部 dma-buf 分配；单独解码器进程 0 映射，量级来自多模型实例 + 34 个解码上下文），
-  生产用 media_sdk/board_sdk 不导出 dma-buf，**不替换这套栈无法归零**。
-  另测 `bm_image_alloc_contiguous_mem_heap_mask` 的 **1/2/3/4/6 号 heap 全部各产生 1 个
-  dma-buf fd**（8/16/32 号分配失败）→ dma-buf 是 bm_image 分配路径固有的，换 heap 无法规避。
+  剩余 **290 个映射（固定值，与路数无关）** 来自库内部 mmap（`bmrt`/`bmcv`/ffmpeg 上下文）；
+  生产同样有 **135 个 dma-buf fd**，但**不做进程 mmap（0 映射）**。
+  另测：`bm_image_alloc_contiguous_mem_heap_mask` 的 1/2/3/4/6 号 heap 全部各产生 1 个
+  dma-buf fd（8/16/32 号失败）；`bm_malloc_device_byte`、`bm_image_alloc_dev_mem` 也各产生 1 个
+  dma-buf fd → dma-buf fd 是 bmlib/bmcv 分配路径固有的；要 0 映射需消除库内 mmap，暂未定位到开关。
 - **ISC 偶发抖动**：与“解码器重建风暴 → 同时重新 resolve previewURL”同源；常驻化后
   34/36 稳定，乙烯南路2 偶发掉线 **1 分钟内自愈**（ISC 会话侧），凤凰咀两路 fresh 两协议均失败（外部）。
 - **抖动收敛（代码）**：读失败触发 gateway 重启的阈值从「5 次错误（<100ms，瞬时丢包就重建

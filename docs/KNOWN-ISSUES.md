@@ -12,14 +12,14 @@ commit: -
 
 ### KI-049 dma-buf 映射/fd 无法归零（解码器选型差异，不是重连 bug）
 
-- 生产进程 **0 dma-buf 映射 / 0 dma-buf fd**（`/proc/<pid>/maps` 无 dmabuf），bufinfo 对象 593；
+- 生产进程 **0 dma-buf 映射 / 135 个 dma-buf fd**（`/proc/<pid>/maps` 无 dmabuf），bufinfo 对象 593；
   我方 34 路有画面时 **290 映射 / 450 fd**、bufinfo 对象 1237。
 - **自有图像分配已对齐**：`BMImage::allocate()` 改为 `bm_malloc_device_byte + bm_image_attach`
   （调用方管理连续设备内存），不再给每个 bm_image 开 dma-buf fd；dmabuf fd 644→450、
   对象 2155→1237、总 fd 930→713。
 - 剩余映射/fd 来自 **sophon-ffmpeg 的 h264_bm/hevc_bm 解码器帧缓冲**：库内部用
   `bm_image` 的 dma-buf 堆分配（`dectest` 单解码器进程 0 映射，量级 = 解码上下文数 × ~13）。
-  生产用闭源 media_sdk `DecodeInstance`，不导出 dma-buf；**不换解码器栈无法归零**。
+  生产用闭源 media_sdk `DecodeInstance`，分配 dma-buf 但**不做进程 mmap**；我方 290 个映射为库内固定 mmap（不随路数增长），**要归零需消除库内 mmap，暂未定位到开关**。
 - 重要：这是**实现差异不是泄漏**——对象/映射/ fd 数在 30 分钟 soak 中稳定，
   且按每路有画面归一化（对象 36.4 vs 生产 59.3、fd 21.0 vs 41.7）我方更低。
 
