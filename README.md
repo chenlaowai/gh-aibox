@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 107
+iteration: 108
 updated: 2026-11-19
 commit: -
 -->
@@ -10,6 +10,10 @@ commit: -
 
 ## 当前状态
 
+- **2026-11-19 迭代 108（合流 host 合成）**：按生产 `bm_merger_cpu::prepare_cell` 的做法，合流从
+  每帧 9 次设备 VPP copy 改为 host 9×memcpy 拼 1920×1080 + 单次 H2D，再 JPU 编码；合流固定
+  100ms 节拍，tile 预算 120→250ms。单通道 25K 从 1.4fps 提升到 **2.8~4.9fps**，合流 **3.0~4.2fps**，
+  dmabuf 映射 0、fd ~594、34/36。合流要稳定 8~10fps 仍需编码线程解耦（下一轮）。
 - **2026-11-19 迭代 107（生产私有库逆向 + 合流提速）**：rea 不支持 AArch64 ELF，改用 Ghidra 12.1.4
   headless 成功反编译 `libboard_sdk_bm.so` 的 `create_merger/bm_merger_cpu::on_merge_loop/prepare_cell/
   bm_encoder`：生产合流也是 JPEG→host 合成→JPEG，按 **100ms 节拍（10fps）** 跑、编码在独立线程；

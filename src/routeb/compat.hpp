@@ -828,6 +828,31 @@ public:
         if (mat_to_bm_image(mat, img) != 0) return BMImage();
         return img;
     }
+    // Upload a host Mat into an existing device image (row-wise, honouring the
+    // device stride). Reusing the device canvas avoids a 1080p allocation per
+    // merge frame; the old path did nine bmcv.image_copy_to calls per frame.
+    static int upload_mat(BMImage& img, cv::Mat& mat) {
+        if (mat.empty() || !img.is_created()) return -1;
+        bm_image& b = img.data();
+        if (b.width != mat.cols || b.height != mat.rows) return -1;
+        bm_device_mem_t mem;
+        if (bm_image_get_device_mem(b, &mem) != BM_SUCCESS) return -1;
+        int stride = 0;
+        if (bm_image_get_stride(b, &stride) != BM_SUCCESS) return -1;
+        if (!mat.isContinuous()) return -1;
+        bm_handle_t h = bm_image_get_handle(&b);
+        const int row_bytes = std::min(mat.cols * 3, stride);
+        if (stride == mat.cols * 3 && mat.isContinuous()) {
+            return bm_memcpy_s2d(h, mem, mat.ptr()) == BM_SUCCESS ? 0 : -1;
+        }
+        for (int y = 0; y < mat.rows; ++y) {
+            if (bm_memcpy_s2d_partial_offset(h, mem, mat.ptr(y), row_bytes,
+                                             static_cast<unsigned int>(y * stride)) !=
+                BM_SUCCESS)
+                return -1;
+        }
+        return 0;
+    }
 
     void bm_image_to_tensor(BMImage& img, Tensor& tensor);
 

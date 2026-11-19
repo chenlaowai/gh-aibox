@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 107
+iteration: 108
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,22 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 108 — 2026-11-19 — 合流改 host 合成 + 单次 H2D（对齐生产 prepare_cell）；单通道 1.4→4.9fps
+
+- **按逆向结论改合流 compose**：生产 `bm_merger_cpu::prepare_cell` 是 host 合成后一次
+  `bm_image_copy_host_to_device`；我方原来是每帧 9 次 `bmcv.image_copy_to`（设备 VPP）。
+  改为：tile 变化时解码到 host 缓存（640×360×3），每帧 9 次 memcpy 拼 1920×1080 host 画布，
+  再 `Bmcv::upload_mat` 一次 H2D（stride==row_bytes 时单次 `bm_memcpy_s2d`），最后 JPU 编码。
+- **固定 100ms 节拍**：去掉“dirty 才合成”，与生产 `usleep(clamp(100ms-耗时,30,3000))` 一致；
+  墙不再继承 tile 更新率。
+- **tile 预算 120ms→250ms**：36 任务 ×8Hz 的 tile JPEG 需求（~300 次/s）远超 JPU 能力
+  （1080p q90 实测 29ms/次 ≈34 次/s），会饿死合流/单通道。
+- **实测（34 路有画面，波动区间）**：单通道 25K **2.8~4.9fps**（改前 1.4）、合流 **3.0~4.2fps**
+  （改前 3.8）、`hw_jpeg_ok` ~10 次/s、dmabuf 映射 **0**、fd ~594、34/36。
+  波动主要来自 34 路解码/编码争用；生产只有 10 路有画面。
+- **结论**：要把合流稳定推到 8~10fps，需要把编码从 compose 线程彻底解耦（独立编码线程/队列）
+  并按“墙优先”调度；单纯加锁/改 compose 已到当前架构上限。
+
 ### 迭代 107 — 2026-11-19 — 逆向生产私有库；JPEG 编码分配改为 dev_mem，合流 2.7→3.8fps
 
 - **逆向可行性**：rea 6.8.0 在本机 **不能**反编译这些 AArch64 ELF（Windows Ghidra P0 只收 PE/6502，

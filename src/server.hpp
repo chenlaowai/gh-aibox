@@ -277,6 +277,11 @@ private:
         // Fallback composer canvas: host buffer, wrapped per frame. A cv::Mat
         // here would go through Sophon OpenCV's bmcv allocator (dma-buf).
         std::vector<unsigned char> fallback_buf;
+        // Host-composed merge: production's bm_merger_cpu composes on the host
+        // and does one host->device upload per frame; nine per-tile device
+        // copies were the compose bottleneck here.
+        std::array<std::vector<unsigned char>, 9> host_tiles;
+        std::vector<unsigned char> compose_buf;
         int64_t last_hw_warn = 0;
     };
 
@@ -308,6 +313,7 @@ private:
         sail::BMImage canvas(handle, 1080, 1920, FORMAT_BGR_PACKED,
                              DATA_TYPE_EXT_1N_BYTE);
         bool was_active = false;
+        (void)was_active;
         int64_t last_compose = 0;
         while (!stop_) {
             const std::string key = "all_" + std::to_string(g + 1);
@@ -319,16 +325,12 @@ private:
             std::array<std::shared_ptr<std::vector<unsigned char>>, 9> cur;
             {
                 std::unique_lock<std::mutex> lk(groups_[g].m);
-                if (!was_active) {
-                    // A browser just subscribed: compose and send the current
-                    // grid once even if all tiles are static.
-                    was_active = true;
-                    groups_[g].dirty = true;
-                }
-                groups_[g].cv.wait_for(lk, std::chrono::milliseconds(200),
-                                       [&] { return stop_ || groups_[g].dirty; });
+                // Production's bm_merger_cpu composes on a fixed 100ms tick even
+                // when no tile changed; gating on "dirty" made the wall inherit
+                // the preview tile rate (~4fps) instead of 10fps.
+                groups_[g].cv.wait_for(lk, std::chrono::milliseconds(100),
+                                       [this] { return stop_.load(); });
                 if (stop_) break;
-                if (!groups_[g].dirty) continue;
                 groups_[g].dirty = false;
                 cur = groups_[g].slots;
             }
@@ -350,57 +352,55 @@ private:
                 try {
                     std::lock_guard<std::mutex> lk(jpeg_hw_mutex());
                     auto& grp = groups_[g];
+                    const size_t canvas_bytes =
+                        static_cast<size_t>(1920) * 1080 * 3;
+                    if (grp.compose_buf.size() < canvas_bytes)
+                        grp.compose_buf.resize(canvas_bytes);
+                    std::memset(grp.compose_buf.data(), 0, canvas_bytes);
                     for (int i = 0; i < 9; ++i) {
-                        int x = (i % 3) * 640;
-                        int y = (i / 3) * 360;
+                        const int x = (i % 3) * 640;
+                        const int y = (i / 3) * 360;
                         if (!cur[i] || cur[i]->empty()) {
                             grp.cached_src[i].reset();
-                            grp.cached_img[i].reset();
-                            bmcv.image_copy_to(black_bm, canvas, x, y);
+                            grp.host_tiles[i].clear();
                             continue;
                         }
-                        // Static/status tiles repeat for seconds; decoding them
-                        // on every merge frame was the main cost. Decode only
-                        // when the tile bytes actually changed.
-                        if (!grp.cached_img[i] || grp.cached_src[i] != cur[i]) {
-                            if (!jpeg_markers_ok(*cur[i])) {
-                                // Truncated tile: keep the previous image and
-                                // retry when new bytes arrive (KI-030).
-                                if (!grp.cached_img[i])
-                                    bmcv.image_copy_to(black_bm, canvas, x, y);
-                                else
-                                    bmcv.image_copy_to(*grp.cached_img[i], canvas, x, y);
-                                continue;
-                            }
+                        if (grp.host_tiles[i].empty() ||
+                            grp.cached_src[i] != cur[i]) {
+                            if (!jpeg_markers_ok(*cur[i])) continue;
                             sail::BMImage img =
                                 bmcv.imdecode(cur[i]->data(), cur[i]->size());
                             if (img.width() <= 0 || img.height() <= 0) {
-                                // Decode failed: keep the last good tile rather
-                                // than flashing black/colour noise.
                                 grp.cached_src[i] = cur[i];
-                                if (grp.cached_img[i])
-                                    bmcv.image_copy_to(*grp.cached_img[i], canvas, x, y);
-                                else
-                                    bmcv.image_copy_to(black_bm, canvas, x, y);
                                 continue;
                             }
-                            if (img.width() == 640 && img.height() == 360) {
-                                grp.cached_img[i] =
-                                    std::make_shared<sail::BMImage>(std::move(img));
-                            } else {
-                                sail::BMImage r = bmcv.resize(
+                            if (img.width() != 640 || img.height() != 360)
+                                img = bmcv.resize(
                                     img, 640, 360,
                                     bmcv_resize_algorithm::BMCV_INTER_LINEAR);
-                                grp.cached_img[i] =
-                                    std::make_shared<sail::BMImage>(std::move(r));
+                            grp.host_tiles[i].resize(
+                                static_cast<size_t>(640) * 360 * 3);
+                            cv::Mat tile(360, 640, CV_8UC3,
+                                         grp.host_tiles[i].data());
+                            if (sail::Bmcv::bm_image_to_mat(img, tile) != 0) {
+                                grp.host_tiles[i].clear();
+                                continue;
                             }
                             grp.cached_src[i] = cur[i];
                         }
-                        if (grp.cached_img[i])
-                            bmcv.image_copy_to(*grp.cached_img[i], canvas, x, y);
-                        else
-                            bmcv.image_copy_to(black_bm, canvas, x, y);
+                        if (grp.host_tiles[i].empty()) continue;
+                        for (int row = 0; row < 360; ++row)
+                            std::memcpy(
+                                grp.compose_buf.data() +
+                                    (static_cast<size_t>(y + row) * 1920 + x) * 3,
+                                grp.host_tiles[i].data() +
+                                    static_cast<size_t>(row) * 640 * 3,
+                                static_cast<size_t>(640) * 3);
                     }
+                    cv::Mat host_canvas(1080, 1920, CV_8UC3,
+                                        grp.compose_buf.data());
+                    if (sail::Bmcv::upload_mat(canvas, host_canvas) != 0)
+                        throw std::runtime_error("merge upload failed");
                     std::string ext = ".jpg";
                     if (!bmcv.imencode(ext, canvas, buf)) buf.clear();
                 } catch (const std::exception& e) {
