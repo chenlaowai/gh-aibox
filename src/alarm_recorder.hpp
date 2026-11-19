@@ -133,10 +133,12 @@ private:
         bool ok = false;
     };
 
-    // Same clock as Task::now_ms() (steady_clock): both live in this process.
+    // Wall-clock milliseconds: alarm file names and the clip window passed by
+    // Task::save_alarm are system_clock epoch values, so the ring timeline
+    // must use the same clock or the requested window never matches.
     static int64_t wall_now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
-                   std::chrono::steady_clock::now().time_since_epoch())
+                   std::chrono::system_clock::now().time_since_epoch())
             .count();
     }
 

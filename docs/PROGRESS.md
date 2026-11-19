@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 69
-updated: 2026-11-13
+iteration: 70
+updated: 2026-11-19
 commit: -
 -->
 
@@ -9,6 +9,49 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 70 — 2026-11-19 — MP4 通道闪烁与告警视频丢失（v1.0.2 已部署 206.25）
+
+- **现象**：所有 MP4 通道预览每 2~4 秒黑屏白字「正在重连」再回到画面；告警只有图片，
+  视频目录空或文件名 `19700101_*`。
+- **根因 1（闪烁）**：MP4 走 `sail::Decoder` 直连本地文件，**没有按帧率节流**。上传片源
+  只有 3~9 秒（20/6/25fps），直连解码不到 1 秒就播完 → `read()` 返回 EOF；代码把 EOF
+  当"连续 5 次读失败"，先 `publish_status("正在重连监控视频流...")`（黑底白字状态帧）
+  再重开。实测 `decoder reconnected` **125 次/分钟**（16 路 MP4 合计），画面因此反复闪。
+- **根因 2（告警视频）**：容器 env 沿用 alpha 压测值 `AIDETECT_NO_DUMP=1` +
+  `AIDETECT_ALARM_RING=0`：packet ring 不启动、sail dump 被禁用，只剩 `--dump-only`
+  worker，而 worker 打不开 ISC 的一次性 URL（rc=5/139）→ 无视频。
+- **根因 3（1970 文件名）**：`save_alarm` 把 `now_ms()`（steady_clock）当 wall clock 用，
+  告警图片/视频文件名变成 `19700101_*`；packet ring 的选窗走同一 steady 时间轴，反而
+  对不上按 wall 时间传入的窗口。
+- **修复**（`src/task.hpp`、`src/alarm_recorder.hpp`）：
+  - `probe_file_fps()`（libavformat）读片源帧率，读到帧后按 `1000/fps` 节流，MP4 恢复
+    真实速度循环；
+  - 文件 EOF 直接当循环点：**立即重开、不推状态帧**（保留最后一帧），不再进 5 次失败重连；
+  - 读失败不再立刻刷黑屏：连续 3 次（≈0.6s）才推「正在重连」，单次丢帧保留上一帧；
+  - 告警时间改用 `system_clock` 反推帧时刻（`wall_now - (steady_now - frame_steady)`），
+    `AlarmRingRecorder` 同步改 wall clock，文件名与选窗一致；
+  - packet ring 只在有网关本地 fan-out（`ring_url_`）时启用，避免给 RTSP 相机开第二条
+    会话（实测会挤掉解码会话）；无 fan-out 的通道继续走 `--dump-only` worker。
+- **部署**：`.25` 上 `cmake -S . -B build/aidetect` 重编译 → 镜像 `aidetect:v1.0.2`；
+  容器不再注入 `LD_LIBRARY_PATH`/`NO_DUMP`/`ALARM_RING`，显式 `AIDETECT_NO_DUMP=1`。
+- **事故**：调试中一度把 18 路 MP4 也塞进 ffmpeg 网关 + 全通道 ring，触发 codec-open
+  风暴，**VPU 会话耗尽**（`bmvpu_dec_create failed`、全盒 `Failed to open codec`，重启
+  进程无效），按迭代 69 结论**重启盒子**才恢复。
+- **验证**（2026-11-19 23:51，容器 `aidetect:v1.0.2`）：
+  - `/task/list`：36 running、**33 ok / 3 connecting**（3 路是 ISC 侧老问题）；18 路 MP4
+    **全部 ok**、帧龄 17~113ms；60 秒 polling health 翻转 **0** 次；`decoder reconnected`
+    **0**（修复前 125 次/分）。
+  - 预览 WS `/ws/frame` 抓 14s：**106 帧**、JPEG 301~323KB、无一张黑底状态帧
+    （`docs/assets/preview_mp4_no_flicker_20261119.jpg`）。
+  - 告警：`POST /debug/trigger_alarm` 打 ISC 任务 → `packet ring clip frames=249
+    duration_ms=9946`，`helmet_v3/video/20261119_235229.mp4` 1.2MB，ffmpeg 识别
+    H.264 1280×720/9.95s；RTSP 任务同样出片；图片 `20261119_235229.jpg`（不再是 1970），
+    见 `docs/assets/alarm_image_isc_v102_20261119.jpg`。
+  - 资源：CPU ~290%、RSS ~600MB、ffmpeg 9 个（仅 ISC 网关）。
+- **遗留**：4K MP4 预览偶发底部彩条（106 帧样本里 1 帧，<1%），与解码输出/JPEG 截断
+  有关，本轮未处理；`NO_DUMP=1` 下 RTSP 通道的告警视频由独立 `--dump-only` 进程生成，
+  只有后置窗口、没有真正的 pre-roll。
 
 ### 迭代 69 — 2026-11-16 — 单体化两次尝试的硬结论：本机 sail 解码器撑不住 36 路直连；回归混合形态
 

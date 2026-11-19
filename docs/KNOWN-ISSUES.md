@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 41
-updated: 2026-11-12
+iteration: 70
+updated: 2026-11-19
 commit: -
 -->
 
@@ -151,6 +151,41 @@ commit: -
 - 影响：生产 stop 要走优雅停止；`/task/stop` 会 join 线程，不要直接 kill -9。
 - 处理：服务端已按 task stop/join；运维避免强杀；如锁死只能重启。
 - 相关文件：无（驱动行为）
+
+### KI-038（已修复）MP4 通道反复黑屏「正在重连」= 直连解码未节流 + EOF 当故障
+
+- 现象（2026-11-19）：所有 MP4 通道预览每 2~4s 在画面和黑底白字「正在重连」之间来回闪，
+  看起来像网络抖动，实际 MP4 是最稳定的源。
+- 根因：`sail::Decoder` 直连本地文件时按解码速度跑（3~9s 的测试片 1 秒内播完），
+  播完 `read()` 返回 EOF；代码把 EOF 当“连续 5 次读失败”，每次都
+  `publish_status("正在重连监控视频流...")` 推一张黑底白字状态帧，然后重开——
+  `decoder reconnected` 实测 **125 次/分钟**。
+- 修复（迭代 70）：`probe_file_fps()` 用 libavformat 取帧率，按 `1000/fps` 节流；
+  文件 EOF 视为循环点，立即重开且**不推状态帧**；读失败连续 3 次（≈0.6s）才显示重连。
+- 验证：18 路 MP4 全 ok、60s health 零翻转、`decoder reconnected` 0、WS 抓 106 帧无黑底帧。
+- 别再退回“文件走 ffmpeg 网关”：实测 18 路 MP4 网关 + 全通道 ring 会触发 codec-open
+  风暴把 VPU 会话耗尽（全盒 `Failed to open codec`，只能重启盒子）。
+
+### KI-039（已修复）告警视频消失 + 文件名 19700101
+
+- 现象（2026-11-19）：告警图片在、视频目录空；偶尔有文件但名字是 `19700101_101259.mp4`。
+- 根因：① 容器沿用压测 env `AIDETECT_NO_DUMP=1` + `AIDETECT_ALARM_RING=0`，packet ring
+  与 sail dump 都被关，只剩 `--dump-only` worker，而 worker 打不开 ISC 一次性 URL
+  （rc=5/139）；② `save_alarm` 把 `now_ms()`（steady_clock）当 wall clock 写文件名。
+- 修复（迭代 70）：告警时间用 `system_clock` 反推帧时刻，`AlarmRingRecorder` 同步改
+  wall clock；packet ring 只在有网关 fan-out 的通道启用（不额外占相机会话），
+  其余通道继续走 worker。
+- 验证：ISC 任务 `/debug/trigger_alarm` → `packet ring clip frames=249 duration_ms=9946`，
+  1.2MB H.264 1280×720/9.95s；图片名 `20261119_235229.jpg`。
+- 注意：`NO_DUMP=1` 下 RTSP 直连通道的 worker 只有后置窗口，没有 pre-roll（见 README 下一步 13）。
+
+### KI-040（已记录）codec-open 风暴会耗尽 VPU 会话，重启进程无效
+
+- 2026-11-19 调试 MP4 网关方案时复现：几十路解码器同时 open 失败重试后，全盒
+  `bmvpu_dec_create failed` / `VPU_DecIssueSeqInit queueing fail`，此时连本地单个 MP4
+  都打不开（`--dump-only` rc=124/5），`docker restart` 无效，**只能重启盒子**。
+- 预防：部署前先确认解码路径不产生“全通道同时重开”；改配置后看
+  `Failed to open codec` 计数是否持续增长，一旦增长立即停手，别叠加实验。
 
 ## 刻意为之的「坑」
 

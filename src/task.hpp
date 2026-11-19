@@ -73,6 +73,14 @@ public:
             cfg_.channel_address = cfg_.channel_address.substr(7);
         file_source_ = !is_stream_source(cfg_.channel_address) &&
                        std::filesystem::exists(cfg_.channel_address);
+        // A local file decoded directly runs as fast as the VPU allows (a 9s
+        // clip finishes in under a second), so playback is paced to the file's
+        // own frame rate below.
+        if (file_source_) {
+            file_fps_ = probe_file_fps(cfg_.channel_address);
+            if (file_fps_ <= 0) file_fps_ = 15;
+            log_info(cfg_.task_id + " file playback fps=" + std::to_string(file_fps_));
+        }
         for (auto& m : cfg_.models) {
             const ModelSpec* spec = scheduler_.spec(m.name);
             if (!spec) {
@@ -800,7 +808,11 @@ private:
                         std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                         continue;
                     }
-                    if (!direct_decode_enabled()) start_recorder();
+                    // start_recorder() is a no-op unless a gateway fan-out
+                    // exists (see its guard): alarm clips then come from the
+                    // local MPEG-TS ring, and other channels keep the
+                    // --dump-only worker fallback.
+                    start_recorder();
                 }
                 try {
                     std::lock_guard<std::mutex> hw(decode_hw_mutex());
@@ -878,7 +890,39 @@ private:
                 finalize_video(false);
                 if (ret != 0) {
                     ++fail_count;
-                    publish_status("正在重连监控视频流...");
+                    // Playing a local file to the end is a loop point, not a
+                    // stream failure.  Reopen at once and keep the last frame
+                    // on screen; the old path counted five read failures,
+                    // painted the black "正在重连" card and only then reopened,
+                    // which is exactly the mp4 flicker the user saw.
+                    if (file_source_) {
+                        if (decoder_holder) decoder_holder.reset();
+                        decoder_ = nullptr;
+                        pace_t0_ms_ = 0;
+                        paced_frames_ = 0;
+                        try {
+                            std::lock_guard<std::mutex> hw(decode_hw_mutex());
+                            decoder_holder =
+                                std::make_unique<sail::Decoder>(source_url_, true, 0);
+                            if (decoder_holder->is_opened()) {
+                                decoder_ = decoder_holder.get();
+                                fail_count = 0;
+                            } else {
+                                decoder_holder.reset();
+                            }
+                        } catch (const std::exception& e) {
+                            decoder_ = nullptr;
+                            log_warn(cfg_.task_id + " file loop reopen: " + e.what());
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                        continue;
+                    }
+                    // One dropped frame must not replace the picture with the
+                    // black "reconnecting" card: keep the last decoded frame
+                    // on screen (production holds the previous frame) until
+                    // the stream has really been silent for ~0.6s.
+                    if (fail_count >= 3)
+                        publish_status("正在重连监控视频流...");
                     if (fail_count >= 5) {
                         if (dumped_ && decoder_holder) {
                             decoder_holder.release();
@@ -905,7 +949,7 @@ private:
                             std::this_thread::sleep_for(std::chrono::milliseconds(open_backoff_ms()));
                             continue;
                         }
-                        if (!direct_decode_enabled()) restart_recorder();
+                        restart_recorder();
                         try {
                             std::lock_guard<std::mutex> hw(decode_hw_mutex());
                             decoder_holder = std::make_unique<sail::Decoder>(source_url_, true, 0);
@@ -933,6 +977,20 @@ private:
                 }
                 fail_count = 0;
                 process_frame(frame, handle, bmcv, frame_id);
+                // Real-time pacing for local files: decode alone is much
+                // faster than playback, and an unpaced clip reopens every
+                // couple of seconds.  Keep the loop at the source's own rate.
+                if (file_source_ && file_fps_ > 0) {
+                    const int64_t now = now_ms();
+                    if (pace_t0_ms_ <= 0) pace_t0_ms_ = now;
+                    ++paced_frames_;
+                    const double due =
+                        pace_t0_ms_ + paced_frames_ * 1000.0 / file_fps_;
+                    const double wait = due - now;
+                    if (wait > 0 && wait < 1000)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(static_cast<int>(wait)));
+                }
             }
             if (pending_.active) {
                 int64_t wait_ms = pending_.ready_ms + 1500 - now_ms();
@@ -4248,10 +4306,12 @@ private:
         if (file_source_) return;
         if (std::getenv("AIDETECT_NO_RECORDER")) return;
         if (source_url_.empty()) return;
-        // Single-decoder mode uses sail::Decoder::dump() on the same network
-        // connection (production also keeps one stream per channel). The extra
-        // packet-ring process is only used for multi mode, where dump crashes.
-        bool want_ring = use_multi_;
+        // The packet ring is the alarm-video source (production: libdump4).
+        // Reuse the gateway's second local MPEG-TS fan-out: pulling a camera a
+        // second time (decoder + recorder) exhausted these cameras' RTSP
+        // session budget and broke both sides.  A task without a local fan-out
+        // keeps the decoder-dump / worker fallback instead.
+        bool want_ring = !ring_url_.empty();
         if (const char* v = std::getenv("AIDETECT_ALARM_RING"))
             want_ring = std::atoi(v) != 0;
         if (!want_ring) return;
@@ -4316,8 +4376,17 @@ private:
         // Capture the trigger instant before image rendering/label HTTP: the
         // alarm image is this frame, so the video window must be centred here
         // (production's 50% backtracking ratio).
+        // now_ms() is steady_clock (monotonic), so using the raw frame instant
+        // produced 19700101_* alarm file names and a packet-ring window that
+        // could never match.  Convert the frame instant to wall clock:
+        // wall_now - (steady_now - frame_steady).
+        const int64_t steady_now = now_ms();
+        const int64_t frame_steady =
+            current_frame_ms_.load() > 0 ? current_frame_ms_.load() : steady_now;
         const int64_t alarm_wall_ms =
-            current_frame_ms_.load() > 0 ? current_frame_ms_.load() : now_ms();
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count() -
+            (steady_now - frame_steady);
         std::string model_name = rt.spec->name;
         std::string stamp = stamp_at_ms(alarm_wall_ms);
         std::string img_dir = app_.data_root + "/" + cfg_.task_id + "/" + model_name + "/img";
@@ -4438,6 +4507,28 @@ private:
             log_info(cfg_.task_id + " decoder dump started, post=" +
                      std::to_string(post) + "s");
         }
+    }
+    // Average frame rate of a local file, read with libavformat (already linked
+    // for the alarm ring).  Returns 0 when unknown.
+    static int probe_file_fps(const std::string& path) {
+        AVFormatContext* fmt = nullptr;
+        if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) != 0)
+            return 0;
+        int fps = 0;
+        if (avformat_find_stream_info(fmt, nullptr) >= 0) {
+            for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+                AVStream* st = fmt->streams[i];
+                if (!st || !st->codecpar ||
+                    st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
+                    continue;
+                AVRational r = st->avg_frame_rate;
+                if (r.num > 0 && r.den > 0)
+                    fps = std::max(1, static_cast<int>(r.num / r.den + 0.5));
+                break;
+            }
+        }
+        avformat_close_input(&fmt);
+        return fps;
     }
     static bool mp4_is_hevc(const std::string& path) {
         std::ifstream f(path, std::ios::binary);
@@ -4658,6 +4749,9 @@ private:
     std::atomic<int64_t> last_stall_restart_ms_{0};
     std::atomic<bool> high_res_held_{false};
     bool file_source_ = false;
+    int file_fps_ = -1;         // local file playback rate (paced decode)
+    int64_t pace_t0_ms_ = 0;    // pacing anchor for local files
+    int64_t paced_frames_ = 0;
     mutable std::mutex stream_err_mu_;
     std::string last_stream_error_;
     std::atomic<bool> ever_frame_{false};
