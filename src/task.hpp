@@ -352,6 +352,11 @@ public:
         }
         running_ = true;
         task_started_ms_ = now_ms();
+        if (decoder_core_ < 0) {
+            unsigned h = 0;
+            for (unsigned char c : cfg_.task_id) h = h * 131u + c;
+            decoder_core_ = static_cast<int>(h % 2u);
+        }
         infer_thread_ = std::thread([this] { infer_loop(); });
         preview_thread_ = std::thread([this] { preview_loop(); });
         thread_ = std::thread([this] { run(); });
@@ -440,7 +445,10 @@ public:
                                                  ? " frame watchdog: no frame for 45s, restart gateway"
                                                  : " frame watchdog: no first frame for 30s, restart gateway"));
                     publish_status("视频流卡住，正在重连...");
-                    stop_gateway();
+                    // Keep the decoder and its UDP ports: production keeps the
+                    // decode instance resident and only restarts the source.
+                    resume_keep_ports_ = true;
+                    stop_gateway(true);
                     // Decoder::read() blocks on an empty UDP socket with no
                     // timeout. Closing the gateway alone does not wake it;
                     // send a few garbage TS packets to force recv() back so
@@ -914,7 +922,8 @@ private:
                     // exhausted the heap during reconnect waves.
                     decoder_.reset();
                     decoder_holder.reset();
-                    decoder_holder = std::make_shared<sail::Decoder>(source_url_, true, 0);
+                    decoder_holder = std::make_shared<sail::Decoder>(
+                        source_url_, true, 0, decoder_core_);
                     decoder_ = decoder_holder;
                     if (decoder_->is_opened()) {
                         open_fail_count_ = 0;
@@ -999,32 +1008,25 @@ private:
                     ++fail_count;
                     publish_status("正在重连监控视频流...");
                     if (fail_count >= 5) {
-                        decoder_holder.reset();
-                        decoder_.reset();
-                        // A read failure means the ISC media session is gone
-                        // (or the gateway rotated it); production re-resolves
-                        // the previewURL on every reconnect, so drop the cache
-                        // entry instead of blindly reusing the dead URL.
+                        // A read failure means the media session is gone; drop
+                        // the cached ISC previewURL so the next resolve gets a
+                        // fresh session (production re-resolves per reconnect).
                         if (isc_source) IscResolver::invalidate(cfg_.channel_address);
                         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-                        bool gateway_ok = true;
-                        // ISC URLs are single-use: resolve() is called on every attempt and
-                        // isc_rot_ rotates the candidate when an open or read fails.
-                        // ISC keeps the gateway: 36 direct sail::Decoder objects exhaust the
-                    // VPU on this box (verified: whole box stalls, reboot
-                    // needed).  Non-ISC sources decode in-process.
-                    const bool local_file = !is_stream_source(cfg_.channel_address);
-                    // Files have no live pacing: sail::Decoder on a file
-                    // returns EOF after one pass, the task then reconnects
-                    // every few seconds (that reconnect storm was the RSS
-                    // leak driver).  Files and ISC go through the ingest
-                    // bridge, which paces and loops them with monotonic TS.
-                    if (direct_decode_enabled() && !isc_source && !local_file) {
+                        // Resident-first (production keeps DecodeInstance alive):
+                        // restart the gateway on the SAME UDP ports and keep the
+                        // decoder object. Recreating a decoder costs ~85 MB of
+                        // VPU frame buffers and churns VPU links/ISC sessions,
+                        // which is what wedged core1 and caused 5XX storms.
+                        const bool local_file = !is_stream_source(cfg_.channel_address);
+                        resume_keep_ports_ = true;
+                        bool gateway_ok = false;
+                        if (direct_decode_enabled() && !isc_source && !local_file) {
                             source_url_ = direct_decode_url();
                             gateway_ok = !source_url_.empty();
                         } else {
-                            gateway_ok = isc_source ? start_isc_gateway()
-                                                   : start_gateway(source);
+                            gateway_ok = isc_source ? start_isc_gateway(true)
+                                                   : start_gateway(source, true);
                         }
                         if (!gateway_ok) {
                             ++open_fail_count_;
@@ -1032,18 +1034,32 @@ private:
                             continue;
                         }
                         restart_recorder();
+                        wake_decoder_udp();
+                        ++resident_restarts_;
+                        if (resident_restarts_ <= 2 && decoder_) {
+                            fail_count = 0;
+                            log_info(cfg_.task_id + " gateway restarted, decoder kept");
+                            publish_status("监控视频流已恢复");
+                            continue;
+                        }
+                        // Repeated failures on the same decoder: recreate it and
+                        // flip the VPU core so a wedged core is not permanent.
+                        decoder_core_ = decoder_core_ == 0 ? 1 : 0;
+                        decoder_.reset();
+                        decoder_holder.reset();
                         try {
                             std::lock_guard<std::mutex> hw(decode_hw_mutex());
-                            decoder_.reset();
-                            decoder_holder.reset();
-                            decoder_holder = std::make_shared<sail::Decoder>(source_url_, true, 0);
+                            decoder_holder = std::make_shared<sail::Decoder>(
+                                source_url_, true, 0, decoder_core_);
                             if (decoder_holder->is_opened()) {
                                 decoder_ = decoder_holder;
                                 if (!no_dump_env())
                                     decoder_->enable_dump(
                                         std::max(12, cfg_.video_duration + 2));
                                 fail_count = 0;
-                                log_info(cfg_.task_id + " decoder reconnected");
+                                resident_restarts_ = 0;
+                                log_info(cfg_.task_id + " decoder reconnected core=" +
+                                         std::to_string(decoder_core_));
                                 publish_status("监控视频流已恢复");
                             } else {
                                 decoder_.reset();
@@ -1066,6 +1082,7 @@ private:
                     continue;
                 }
                 fail_count = 0;
+                resident_restarts_ = 0;
                 process_frame(frame, handle, bmcv, frame_id);
                 if (reconnect_requested_.exchange(false)) {
                     // Stream preference changed: drop the decoder so the outer
@@ -4193,18 +4210,22 @@ private:
         // needs Annex-B NALs for HEVC (sophon ffmpeg 0.15 does not insert
         // hevc_mp4toannexb itself).  The codec is learned from the gateway log
         // on the first attempt, then the gateway retries with the filter.
-    bool start_gateway(const std::string& upstream) {
+    bool start_gateway(const std::string& upstream, bool reuse_ports = false) {
         // The status/watchdog thread may call stop_gateway() at any time (stall
         // recovery / substream switch) while the task thread is (re)starting the
         // gateway.  Serialize the whole lifecycle: two concurrent stop() calls
         // used to join the same std::thread twice and abort the process.
         std::lock_guard<std::recursive_mutex> gw(gateway_mu_);
+        const bool reuse = reuse_ports || resume_keep_ports_;
+        resume_keep_ports_ = false;
         last_progress_ms_ = now_ms();
-        stop_gateway();
-        int p_dec = 0, p_rec = 0;
-        if (!alloc_gateway_ports(p_dec, p_rec)) {
-            log_warn(cfg_.task_id + " no free local UDP port for gateway");
-            return false;
+        stop_gateway(reuse);
+        int p_dec = port_dec_, p_rec = port_rec_;
+        if (!reuse || p_dec <= 0) {
+            if (!alloc_gateway_ports(p_dec, p_rec)) {
+                log_warn(cfg_.task_id + " no free local UDP port for gateway");
+                return false;
+            }
         }
         port_dec_ = p_dec;
         port_rec_ = p_rec;
@@ -4262,7 +4283,10 @@ private:
             ring_url_ = rec;
             started_ms_ = now_ms();
             gateway_pid_ = "inproc";
-            bool got = false;
+            // Reuse mode keeps the decoder bound to p_dec, so a probe bind can
+            // fail even though the bridge is producing data. Skip the probe and
+            // let the resident decoder/watchdog decide.
+            bool got = reuse;
             const int attempts = 10;
             for (int i = 0; i < attempts && !got; ++i) {
                 got = udp_has_data(p_dec, 4000);
@@ -4319,7 +4343,7 @@ private:
         // UDP has no connect timeout: wait for the first local datagram instead
         // of letting sail::Decoder block forever. RTMP transcode setup can be
         // slower than RTSP, so give it more time before falling back.
-        bool got = false;
+        bool got = reuse;  // resident restart: the decoder holds p_dec
         int attempts = upstream_hevc_ < 0 ? 2 : (rtsp ? 7 : 10);
         for (int i = 0; i < attempts && !got; ++i) {
             got = udp_has_data(p_dec, 4000);
@@ -4420,7 +4444,7 @@ private:
         return {};
     }
 
-    bool start_isc_gateway() {
+    bool start_isc_gateway(bool reuse_ports = false) {
         int base_st = IscResolver::stream_type_of(cfg_.channel_address);
         // Someone watching the single channel -> main stream; otherwise the
         // substream, which is ~10x cheaper to decode on this box.
@@ -4469,7 +4493,7 @@ private:
                 std::string url = IscResolver::resolve(cfg_.channel_address, c.first, c.second);
                 log_info(cfg_.task_id + " ISC candidate " + c.first +
                          " streamType=" + std::to_string(c.second));
-                if (start_gateway(url)) {
+                if (start_gateway(url, reuse_ports)) {
                     upstream_url_ = url;
                     return true;
                 }
@@ -4479,7 +4503,7 @@ private:
                              " HEVC source, retry with hevc_mp4toannexb");
                     std::string url2 =
                         IscResolver::resolve(cfg_.channel_address, c.first, c.second);
-                    if (start_gateway(url2)) {
+                    if (start_gateway(url2, reuse_ports)) {
                         upstream_url_ = url2;
                         return true;
                     }
@@ -4493,7 +4517,7 @@ private:
         }
         return false;
     }
-    void stop_gateway() {
+    void stop_gateway(bool keep_ports = false) {
         std::lock_guard<std::recursive_mutex> gw(gateway_mu_);
         seg_rec_.stop();
         bridge_.stop();
@@ -4509,9 +4533,11 @@ private:
         }
         gateway_pid_num_ = 0;
         gateway_pid_.clear();
-        release_gateway_ports();
-        source_url_.clear();
-        ring_url_.clear();
+        if (!keep_ports) {
+            release_gateway_ports();
+            source_url_.clear();
+            ring_url_.clear();
+        }
     }
     void start_recorder() {
         // MP4 playback must never upload alarm events or write alarm clips.
@@ -4992,6 +5018,11 @@ private:
     std::string ring_url_;
     std::string gateway_pid_;
     pid_t gateway_pid_num_ = 0;
+    // VPU core pinning: 0/1 assigned per task; flipped when a decoder has to be
+    // recreated so a wedged core is never a permanent dead end.
+    int decoder_core_ = -1;
+    int resident_restarts_ = 0;
+    bool resume_keep_ports_ = false;
     // Serializes start_gateway()/stop_gateway() between the task thread and the
     // status/watchdog thread (see start_gateway comment).
     std::recursive_mutex gateway_mu_;

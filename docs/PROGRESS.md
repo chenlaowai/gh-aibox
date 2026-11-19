@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 104
+iteration: 105
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,55 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 105 — 2026-11-19 — RTSP/MP4/ISC 无画面根因是 VPU core 楔死；解码器常驻化 + core 钉选；dma-buf/fd 归一化分析
+
+- **现象（10:04）**：36 任务只有 **16 ok**；部分 RTSP（数智技术中心_第一排/第三排/大门/培训中心）与
+  多个 MP4 本地文件任务 `everFrame=false`；5 路 ISC（14K/28K/钢栈桥/预制场/乙烯南路2）`5XX`。
+  用户确认这些 RTSP/ISC 在生产侧都有画面。
+- **定位（不是取流问题）**：
+  1. 失败的 RTSP/MP4 任务日志都是 `ingest bridge pid=none udp ...` 后 30s `no first frame`；
+     直接对同一 RTSP URL 跑 `ffmpeg`：**能连上并收到码流**，但解码报
+     `h264_bm/h265_bm: pkt can't be sent to decoder, ret=-2`；MP4 文件存在且可读。
+  2. `/proc/vpuinfo`：core0 `link_num=16`（占满）、core1 只有 4，且 core1 `usage 2%`；
+     `-core_idx 0` 显式指定时能解码，`-core_idx 1`/auto 报同样的 `ret=-2`。
+     → **VPU core1 已被楔死**，auto 选核把新解码器分到坏 core，永远起不来。
+  3. 容器重启只恢复到 3/36（VPU 固件状态在容器外），**重启盒子后 34/36**（仅凤凰咀两路 5XX）。
+- **修复**：
+  1. `sail::Decoder` 增加 `core` 参数，按 taskId 哈希钉 core 0/1；重建解码器时**翻转 core**，
+     避免坏 core 成为永久死角。
+  2. **解码器常驻化**（对齐生产 `DecodeInstance` 常驻）：读失败时不再销毁/重建解码器，而是
+     `resume_keep_ports_` + `stop_gateway(true)` 在**同一对 UDP 端口**上重启 gateway，保留 decoder
+     对象；连续 2 次无效才重建（并翻转 core）。watchdog 重启 gateway 也保留端口/解码器。
+     —— 之前每 5 次读失败重建一个 ~85MB 解码器，正是 VPU link 抖动与 core 楔死的放大器。
+- **修复后（10:35 部署）**：**34/36 ok**（仅凤凰咀-游客中心/博物馆 5XX，fresh RTSP 与 RTMP 都失败，
+  外部）；`/proc/vpuinfo` core0/core1 `link_num=16/18` 均衡、`restarts=0`、无 FATAL。
+- **fd / dma-buf 归一化（回答“能否与生产完全一致”）**：
+  | 指标 | 生产（10 有画面 / 21 任务） | 我方（34 有画面 / 36 任务） | 每路归一化（生产 vs 我方） |
+  |---|---|---|---|
+  | 进程 fd | 417 | **713** | 41.7 vs **21.0** |
+  | dma-buf fds | 0 | **450** | 0 vs 13.2 |
+  | dma-buf 映射 | 0 | **290** | 0 vs 8.5 |
+  | dma-buf 对象（bufinfo） | 593 | **1237** | 59.3 vs **36.4** |
+  | 线程 | 1020 | **275** | 102 vs 8.1 |
+  | RSS | 1158 MB | **970 MB** | 116 vs 28.5 MB |
+  | CPU | 88% | **154%** | 8.8% vs **4.5%** |
+  结论：**fd/CPU/dma-buf 对象都随“有画面路数”线性增长**；按每路归一化，我方 fd/对象/RSS/CPU
+  都低于生产，绝对数高是因为我们有 34 路有画面（生产 10 路）。
+  dma-buf 归零只能去掉我们自己的图像分配：`BMImage` 改为
+  **`bm_malloc_device_byte` + `bm_image_attach`**（调用方管理连续设备内存）后，
+  dmabuf fds **644→450**、bufinfo 对象 **2155→1237**、总 fd **930→713**；
+  剩余 290 个映射/450 个 fd 来自 **sophon-ffmpeg 的 h264_bm/hevc_bm 解码器帧缓冲**
+  （`dectest` 单独进程 0 映射，说明是应用内解码器上下文规模），生产用 media_sdk
+  解码器不导出 dma-buf，**不引入 media_sdk 无法归零**。
+- **ISC 偶发抖动**：与“解码器重建风暴 → 同时重新 resolve previewURL”同源；常驻化后
+  34/36 稳定，乙烯南路2 偶发掉线 **1 分钟内自愈**（ISC 会话侧），凤凰咀两路 fresh 两协议均失败（外部）。
+- **生产重启后帧率复测（10:40）**：合流墙 **10.0 fps**（15s 150 个 WS 帧，~70KB/帧）；
+  单通道 25K **5.0 fps**（~50-60KB/帧）、14K **4.13 fps**（~90KB/帧）。
+  我方同一时段：合流 `all_1` **5.2 fps**（~974KB/帧）、25K **4.88 fps**（~214KB/帧）、
+  6488 4K **1.6 fps**（~1975KB/帧，ADR-097 按源尺寸）。
+- **待跟进**：合流墙 5.2 vs 生产 10 fps（生产硬件 MergeInstance）；4K 单通道 1.6 fps
+  （全尺寸 VPP+JPU 在 34 路解码压力下）。
+
 ### 迭代 104 — 2026-11-19 — 优雅停机（PID1 SIGTERM）+ 告警门控持久化 + 时延指标；生产告警去重证据
 
 - **重启/停机卡死的根因**：进程是容器 PID 1，Linux 对 PID 1 的默认信号处置是“忽略”，

@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 104
+iteration: 105
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,34 @@ commit: -
 > 两类都记：已知但暂不修的 bug，以及「看起来像 bug 其实是有意为之」的陷阱（后者更值钱）。
 
 ## 已知缺陷
+
+### KI-049 dma-buf 映射/fd 无法归零（解码器选型差异，不是重连 bug）
+
+- 生产进程 **0 dma-buf 映射 / 0 dma-buf fd**（`/proc/<pid>/maps` 无 dmabuf），bufinfo 对象 593；
+  我方 34 路有画面时 **290 映射 / 450 fd**、bufinfo 对象 1237。
+- **自有图像分配已对齐**：`BMImage::allocate()` 改为 `bm_malloc_device_byte + bm_image_attach`
+  （调用方管理连续设备内存），不再给每个 bm_image 开 dma-buf fd；dmabuf fd 644→450、
+  对象 2155→1237、总 fd 930→713。
+- 剩余映射/fd 来自 **sophon-ffmpeg 的 h264_bm/hevc_bm 解码器帧缓冲**：库内部用
+  `bm_image` 的 dma-buf 堆分配（`dectest` 单解码器进程 0 映射，量级 = 解码上下文数 × ~13）。
+  生产用闭源 media_sdk `DecodeInstance`，不导出 dma-buf；**不换解码器栈无法归零**。
+- 重要：这是**实现差异不是泄漏**——对象/映射/ fd 数在 30 分钟 soak 中稳定，
+  且按每路有画面归一化（对象 36.4 vs 生产 59.3、fd 21.0 vs 41.7）我方更低。
+
+### KI-048 VPU core 楔死：部分 RTSP/MP4 任务“有流但解不出帧”
+
+- **现象**：某些 RTSP/MP4 任务 `ingest bridge` 已启动、源码流可达，但 `everFrame=false`，
+  30s 后 watchdog 反复重启 gateway；同时多路 ISC 间歇 5XX。
+- **证据**：`ffmpeg -i <同一 RTSP>` 能连上，但 `h264_bm/h265_bm: pkt can't be sent to decoder,
+  ret=-2`；`/proc/vpuinfo` core0 `link_num=16`（满）而 core1 只有 4 且 `usage 2%`；
+  `-core_idx 0` 显式指定能解码，`-core_idx 1`/auto 失败。重启容器只恢复到 3/36，
+  **重启盒子后 34/36**。
+- **根因**：长时间运行中解码器反复创建/销毁（每 5 次读失败重建 ~85MB 解码器）、
+  core 负载不均，最终一个 VPU core 进入坏状态；auto 选核把新解码器分到坏 core，无法恢复。
+- **修复**：①解码器按 taskId 哈希钉 `core_idx` 0/1，重建时翻转 core；②**解码器常驻化**：
+  读失败/看门狗只重启 gateway（保留同一对 UDP 端口与 decoder），连续 2 次无效才重建。
+- **验证**：重启盒子 + 新二进制后 **34/36**（仅凤凰咀两路外部 5XX），VPU core0/1
+  `link_num=16/18` 均衡，restarts=0。
 
 ### KI-047 设备内存 churn：解码器重建重叠 + 失败路径不释放（vdi_allocate_dma_memory fail）
 

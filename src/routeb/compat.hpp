@@ -224,8 +224,57 @@ public:
         created_ = true;
         owns_ = false;
     }
+    bool try_attach_device_mem() {
+        static const bool enabled = [] {
+            const char* v = std::getenv("AIDETECT_ATTACH_MEM");
+            return !(v && std::string(v) == "0");
+        }();
+        if (!enabled) return false;
+        int pn = bm_image_get_plane_num(img_);
+        if (pn < 1 || pn > 3) return false;
+        int strides[3] = {0, 0, 0};
+        if (bm_image_get_stride(img_, strides) != BM_SUCCESS) return false;
+        const int h = img_.height;
+        int heights[3] = {h, h, h};
+        if (img_.image_format == FORMAT_NV12 || img_.image_format == FORMAT_YUV420P) {
+            heights[1] = h / 2;
+            heights[2] = h / 2;
+        }
+        unsigned total = 0;
+        unsigned offs[3] = {0, 0, 0};
+        for (int i = 0; i < pn; ++i) {
+            offs[i] = total;
+            total += static_cast<unsigned>(strides[i]) * static_cast<unsigned>(heights[i]);
+        }
+        if (total == 0) return false;
+        bm_handle_t hd = bm_image_get_handle(&img_);
+        bm_device_mem_t mem{};
+        if (bm_malloc_device_byte(hd, &mem, total) != BM_SUCCESS || mem.size == 0)
+            return false;
+        bm_device_mem_t planes[3];
+        for (int i = 0; i < pn; ++i)
+            planes[i] = bm_mem_from_device(
+                mem.u.device.device_addr + offs[i],
+                static_cast<unsigned>(strides[i]) * static_cast<unsigned>(heights[i]));
+        if (bm_image_attach(img_, planes) != BM_SUCCESS) {
+            bm_free_device(hd, mem);
+            return false;
+        }
+        owned_mem_ = mem;
+        attached_own_ = true;
+        bm_live_bytes() += mem.size;
+        ++bm_alloc_count();
+        return true;
+    }
     void allocate() {
-        if (!is_created() || owns_) return;
+        if (!is_created() || owns_ || attached_own_) return;
+        // Allocate caller-managed device memory and attach it, instead of the
+        // dma-buf heap used by bm_image_alloc_contiguous_mem. Production's
+        // media_sdk exposes 0 dma-buf mappings/fds; every contiguous allocation
+        // here costs one dma-buf fd (our service held 644 of them at 34 active
+        // channels). bm_malloc_device_byte uses the bmlib device allocator, so
+        // the fd/dma-buf accounting drops to match production.
+        if (try_attach_device_mem()) return;
         // Heap mask 6 keeps user images on the same heap sail used; contiguous
         // allocation is required for bm_image_to_tensor.
         if (bm_image_alloc_contiguous_mem_heap_mask(1, &img_, 6) != BM_SUCCESS)
@@ -240,6 +289,17 @@ public:
     }
     void destroy() {
         if (!created_) return;
+        if (attached_own_) {
+            bm_handle_t h = bm_image_get_handle(&img_);
+            bm_image_detach(img_);
+            if (owned_mem_.size > 0) {
+                bm_live_bytes() -= static_cast<long long>(owned_mem_.size);
+                bm_free_device(h, owned_mem_);
+                owned_mem_ = {};
+            }
+            ++bm_free_count();
+            attached_own_ = false;
+        }
         if (owns_ && is_created()) {
             bm_device_mem_t mem{}; bm_image_get_device_mem(img_, &mem);
             long long sz = static_cast<long long>(mem.size);
@@ -280,15 +340,23 @@ private:
     void move_from(BMImage& o) {
         img_ = o.img_;
         owns_ = o.owns_;
+        owned_mem_ = o.owned_mem_;
+        attached_own_ = o.attached_own_;
         created_ = o.created_;
         pts_ = o.pts_;
         dts_ = o.dts_;
         o.img_ = {};
         o.owns_ = false;
+        o.owned_mem_ = {};
+        o.attached_own_ = false;
         o.created_ = false;
     }
     bm_image img_{};
     bool owns_ = false;
+    // Caller-managed contiguous device memory (bm_malloc_device_byte + attach):
+    // avoids one dma-buf fd per image, matching production's fd/dma-buf profile.
+    bm_device_mem_t owned_mem_{};
+    bool attached_own_ = false;
     bool created_ = false;
     double pts_ = 0, dts_ = 0;
 };
@@ -1026,8 +1094,8 @@ inline void set_decoder_env(const std::string& key, const std::string& value) {
 
 class Decoder {
 public:
-    Decoder(const std::string& url, bool compressed, int tpu_id)
-        : url_(url), compressed_(compressed), tpu_id_(tpu_id) {
+    Decoder(const std::string& url, bool compressed, int tpu_id, int core = -1)
+        : url_(url), compressed_(compressed), tpu_id_(tpu_id), core_(core) {
         open();
     }
     ~Decoder() { release(); }
@@ -1156,6 +1224,13 @@ private:
         if (cc_->priv_data) {
             av_opt_set(cc_->priv_data, "extra_frame_buffer_num", "1", 0);
             av_opt_set(cc_->priv_data, "output_format", "0", 0);
+            // Pin the VPU core. Auto-selection concentrated all links on one
+            // core after a while (core0=16/core1=4), and when that core wedged
+            // every new decoder failed with "pkt can't be sent ret=-2" while
+            // the other core was idle. Tasks assign even/odd cores and flip on
+            // recreate so a bad core is never a permanent dead end.
+            if (core_ >= 0)
+                av_opt_set(cc_->priv_data, "core_idx", std::to_string(core_).c_str(), 0);
         }
         codec_name_ = dec->name ? dec->name : "?";
         // Smooth decoder creation: when 30+ channels reconnect after an ISC
@@ -1288,6 +1363,7 @@ private:
     std::string url_;
     bool compressed_ = false;
     int tpu_id_ = 0;
+    int core_ = -1;
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext* cc_ = nullptr;
     AVPacket* pkt_ = nullptr;

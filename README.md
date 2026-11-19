@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 104
+iteration: 105
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,14 @@ commit: -
 一句话定位：把原先 Python 写的 BM1684X AI 检测服务端用 C++ 重写并 Docker 化；当前已是**可运行的 MVP+**：5 类模型、ISC、告警 5+5 视频、多实例调度、36 路压测、硬件加速合流、Docker/Compose 均已跑通；实时预览已按生产方案重构为**按需渲染 + 真内容 10fps + 1080p 只缩不放**。
 
 ## 当前状态
+
+- **2026-11-19 迭代 105（部分 RTSP/MP4/ISC 无画面根因）**：根因是 **VPU core1 楔死**
+  （core0 16 links 占满、core1 仅 4 且新解码器报 `pkt can't be sent ret=-2`），不是取流。
+  重启盒子后 **34/36 有画面**（仅凤凰咀两路 5XX 属外部）。修复：解码器按 taskId 钉 VPU core
+  0/1、失败自动翻转；**解码器常驻化**（读失败只重启 gateway、同 UDP 端口保留 decoder）。
+  `BMImage` 改 `bm_malloc_device + attach`：dmabuf fd 644→450、对象 2155→1237、总 fd 930→713。
+  按每路有画面归一化，fd/对象/CPU/RSS 均低于生产。生产重启后复测：合流 10.0fps、
+  单通道 5.0/4.13fps（我方 5.2 / 4.88 / 4K 1.60fps）。详见 PROGRESS 迭代 105。
 
 - **2026-11-19 迭代 104（停机/门控/时延）**：注册 PID1 `SIGTERM/SIGINT → _exit(0)`，
   `docker stop -t 5` 从 **6871ms/exit 137（SIGKILL）** 变为 **1447ms/exit 0**，不再产生僵尸容器；
