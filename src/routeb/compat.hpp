@@ -226,10 +226,22 @@ public:
     }
     bool try_attach_device_mem() {
         static const bool enabled = [] {
+            // Off by default: attached device memory produced colour-noise
+            // stripes in VPP-produced preview/merge images (preview canvas and
+            // bmcv.imdecode/resize outputs), so the proven contiguous heap path
+            // is the default. Opt in with AIDETECT_ATTACH_MEM=1 only after a
+            // visual regression pass on the target box.
             const char* v = std::getenv("AIDETECT_ATTACH_MEM");
-            return !(v && std::string(v) == "0");
+            return v && std::string(v) == "1";
         }();
         if (!enabled) return false;
+        // Packed BGR/RGB canvases are VPP/imencode targets; attached memory for
+        // them came back as colour-noise stripes on the merge wall (VPP writes
+        // with a different plane expectation), so keep the proven contiguous
+        // heap path for packed formats.
+        if (img_.image_format == FORMAT_BGR_PACKED ||
+            img_.image_format == FORMAT_RGB_PACKED)
+            return false;
         int pn = bm_image_get_plane_num(img_);
         if (pn < 1 || pn > 3) return false;
         int strides[3] = {0, 0, 0};
@@ -243,9 +255,14 @@ public:
         unsigned total = 0;
         unsigned offs[3] = {0, 0, 0};
         for (int i = 0; i < pn; ++i) {
+            // VPP writes expect each plane to start on a 4 KB boundary, like
+            // bm_image_alloc_contiguous_mem produces; a tight pack corrupted
+            // previews/merge tiles (colour-noise stripes).
+            total = (total + 4095u) & ~4095u;
             offs[i] = total;
             total += static_cast<unsigned>(strides[i]) * static_cast<unsigned>(heights[i]);
         }
+        total = (total + 4095u) & ~4095u;
         if (total == 0) return false;
         bm_handle_t hd = bm_image_get_handle(&img_);
         bm_device_mem_t mem{};

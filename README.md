@@ -14,7 +14,8 @@ commit: -
   （core0 16 links 占满、core1 仅 4 且新解码器报 `pkt can't be sent ret=-2`），不是取流。
   重启盒子后 **34/36 有画面**（仅凤凰咀两路 5XX 属外部）。修复：解码器按 taskId 钉 VPU core
   0/1、失败自动翻转；**解码器常驻化**（读失败只重启 gateway、同 UDP 端口保留 decoder）。
-  `BMImage` 改 `bm_malloc_device + attach`：dmabuf fd 644→450、对象 2155→1237、总 fd 930→713。
+  `BMImage` 的 `attach` 内存路径可把 dmabuf fd 644→450、对象 2155→1237，但 VPP 写 attached 内存导致
+  预览/合流彩色噪声，已默认关闭（`AIDETECT_ATTACH_MEM=1` 可选）；最终 fd 901、dmabuf fd 618。
   按每路有画面归一化，fd/对象/CPU/RSS 均低于生产。生产重启后复测：合流 10.0fps、
   单通道 5.0/4.13fps（我方 5.2 / 4.88 / 4K 1.60fps）。详见 PROGRESS 迭代 105。
 
