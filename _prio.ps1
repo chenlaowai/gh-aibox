@@ -1,7 +1,0 @@
-$s='src\server.hpp'; $t=[IO.File]::ReadAllText($s)
-$t=$t.Replace('std::lock_guard<std::mutex> lk(jpeg_hw_mutex());','JpegWallLock wall_lock;')
-[IO.File]::WriteAllText($s,$t)
-$p='src\task.hpp'; $t=[IO.File]::ReadAllText($p)
-$t=$t.Replace('std::lock_guard<std::mutex> lk(jpeg_hw_mutex());','jpeg_yield_to_wall();`r`n            std::lock_guard<std::mutex> lk(jpeg_hw_mutex());')
-$t=$t.Replace('`r`n','"`r`n"')
-[IO.File]::WriteAllText($p,$t)
