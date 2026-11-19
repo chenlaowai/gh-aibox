@@ -1007,7 +1007,14 @@ private:
                 if (ret != 0) {
                     ++fail_count;
                     publish_status("正在重连监控视频流...");
-                    if (fail_count >= 5) {
+                    // Transient decode errors used to tear down the gateway after
+                    // just 5 bad packets (<100 ms), which turned a single lost
+                    // frame into a full ISC session re-resolve and made channels
+                    // flap. Production only reconnects when the stream is really
+                    // dead: require either 2 s without a frame or 50 consecutive
+                    // errors before restarting the source.
+                    const bool stream_dead = now_ms() - last_frame_ms_.load() > 2000;
+                    if ((fail_count >= 5 && stream_dead) || fail_count >= 50) {
                         // A read failure means the media session is gone; drop
                         // the cached ISC previewURL so the next resolve gets a
                         // fresh session (production re-resolves per reconnect).
