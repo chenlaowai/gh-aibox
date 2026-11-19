@@ -63,8 +63,9 @@ inline std::mutex& log_mutex() {
     return m;
 }
 
-// JPU is a single shared encoder/decoder engine. Concurrent JPEG encode/decode
-// from many task threads can wedge the driver; serialize those calls.
+// JPU encode/decode is shared by all tasks. A single lock was faster than two
+// slots on this box: concurrent encodes contended inside the JPU driver and cut
+// merge/preview throughput roughly in half, so keep one process-wide lock.
 inline std::mutex& jpeg_hw_mutex() {
     static std::mutex m;
     return m;

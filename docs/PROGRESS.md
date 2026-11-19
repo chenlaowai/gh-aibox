@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 106
+iteration: 107
 updated: 2026-11-19
 commit: -
 -->
@@ -9,6 +9,32 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+### 迭代 107 — 2026-11-19 — 逆向生产私有库；JPEG 编码分配改为 dev_mem，合流 2.7→3.8fps
+
+- **逆向可行性**：rea 6.8.0 在本机 **不能**反编译这些 AArch64 ELF（Windows Ghidra P0 只收 PE/6502，
+  报 `target_format_unsupported`；Hopper 不支持 win32，IDA/kuna 未配置）。改用 **Ghidra 12.1.4
+  headless + JDK21** 直接分析：把 `-Duser.home`/`-Djava.io.tmpdir` 与 `APPDATA`/`LOCALAPPDATA`
+  全部指向工作区、用 `ghidra.GhidraLauncher` 启动，绕过 `analyzeHeadless.bat` 写
+  `java_home.save` 的权限问题。产物在 `.work/re/`（符号表、关键函数反汇编、`board_decompiled.c`）。
+- **逆向结论（libboard_sdk_bm.so，19,864 个符号）**：
+  - `board::create_merger` @0x41503c → `bm_merger_cpu`；`create_encoder` → `bm_encoder`；
+    `bm_encoder` 依赖 libavcodec（`avcodec_find_encoder_by_name/avcodec_open2/AVPacket`）。
+  - `bm_merger_cpu::on_merge_loop` @0x42da30：每轮先对所有 cell 调 `prepare_cell`，合成后
+    `bm_image_copy_host_to_device`，回调 `onMergeFinished`，然后
+    `usleep(clamp(100ms - 本轮耗时, 30ms, 3000ms))` → **目标 10fps，落后就不睡**。
+  - `prepare_cell`：设备→host、host 上 CvxText 画标签/合成、再 host→device；即**生产合流也走
+    JPEG 解码→host 合成→JPEG 编码**，不是“纯设备帧直取”。差距在**编码异步/线程模型**与每轮耗时。
+  - `libEdgeSystem.so`（52,117 符号）导入 `board::frameToJpegByCpu/jpegToFrameByCpu/get_jpeg_encoder/
+    create_jpeg_encode`，`MJpegInstance::loop` 发 WS；证明预览也是独立编码实例，不是全局一把锁。
+- **实验（失败回退）**：把 `jpeg_hw_mutex` 拆成两个槽（合流 slot1、任务 slot0）后，
+  合流 2.66→**1.25fps**、单通道 3.1→1.5fps（JPU 驱动层并发反而互相拖慢），已回退单锁。
+- **有效修复**：`Bmcv::imencode` 的 NV12 缓冲从 `bm_image_alloc_contiguous_mem_heap_mask` 改为
+  **`bm_image_alloc_dev_mem`**（自动管理、失败率更低）。此前 VPU 100% 时连续分配常失败→静默回退
+  CPU JPEG，是合流慢/预览卡的主因之一。实测 `hw_jpeg_ok +117/12s`（此前 ~0），
+  **合流 2.66→3.83fps**、单通道 25K 1.4fps、dmabuf 映射仍 **0**、fd 592、34/36 有画面。
+- **待继续**：把合流编码从 compose 线程解耦为独立编码线程/队列（对齐生产的 `bm_encoder` 线程 +
+  100ms 节拍），目标合流 ≥8fps；单通道预览优先于合流编码。
+
 ### 迭代 106 — 2026-11-19 — dma-buf 映射 290→0、fd 930→589；根因是 Sophon OpenCV 的 cv::Mat 分配
 
 - **用 LD_PRELOAD 抓到映射来源**：拦截 `mmap` + `/proc/self/fd` 判定 dmabuf，70s 内 5788 次映射的调用栈

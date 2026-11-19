@@ -102,8 +102,8 @@
 
 | 指标 | 我方 | 生产 | 采集方式 |
 |---|---|---|---|
-| 合流墙帧率 | **2.7~6.3 fps**（`all_1`，10s 27~63 帧，~450-974KB/帧；随负载波动） | **10.0 fps**（生产重启后实测，15s 150 帧，~70KB/帧） | WS 抓帧计数；生产 board_sdk 原生合流，我方 OpenCV/JPU 合成，差距待优化 |
-| 单通道预览帧率 | **25K 1.5~4.9 fps / 4K 1.6 fps**（ADR-097 按源尺寸，随负载波动） | **25K 5.0 fps / 14K 4.13 fps**（重启后实测） | WS 抓帧计数；34 路解码+合流下预览线程会被抢占 |
+| 合流墙帧率 | **3.8 fps**（`all_1`，12s 46 帧，~426KB/帧；JPU 编码分配改 dev_mem 后） | **10.0 fps**（生产重启后实测，15s 150 帧，~70KB/帧） | WS 抓帧计数；生产 board_sdk 原生合流，我方 OpenCV/JPU 合成，差距待优化 |
+| 单通道预览帧率 | **25K 1.4~4.9 fps / 4K 1.6 fps**（ADR-097 按源尺寸，随负载波动） | **25K 5.0 fps / 14K 4.13 fps**（重启后实测） | WS 抓帧计数；34 路解码+合流下预览线程会被抢占 |
 | 预览图像 | 1280×720 / 2560×1440，彩色（源为黑白相机时呈灰度） | 同源 | 抓帧 |
 | 检测轮耗时 | **4~39 ms/轮**（36 路并发） | 生产未暴露 | 日志 `detect round ms` |
 | 单次推理 | **0.13~1 ms**（yolov11s fp16 640×640，按模型） | 未暴露 | 日志 `infer stats avg` |
@@ -169,3 +169,19 @@ dma-buf 映射/对象无法在不替换解码器栈的前提下归零。**
 **ISC 偶发抖动的归因**：解码器重建风暴会让多路同时重新 `resolve previewURL`，ISC 会话池瞬时打满
 → 部分通道 5XX，约 1 分钟后自愈；常驻化（只重启 gateway、不重建 decoder）+ 显式 core 钉选后，
 34/36 稳定，仅凤凰咀两路持续 5XX（fresh RTSP/RTMP 都失败，属 ISC/相机侧）。
+
+## 9. 生产私有库逆向（2026-11-19，迭代 107）
+
+- **样本**：`libEdgeSystem.so`（52,117 符号）、`libboard_sdk_bm.so`（19,864 符号）、`libmk_api.so`
+  （AMF/GB28181/WS 工具库）。从生产只读复制，未改生产。
+- **工具**：rea 6.8.0 不支持 AArch64 ELF（Windows Ghidra P0 只收 PE/6502）；用 Ghidra 12.1.4
+  headless + JDK21（`user.home`/`tmp`/`APPDATA` 指到工作区，`ghidra.GhidraLauncher` 启动）。
+- **关键结论**：
+  - `board::create_merger` → `bm_merger_cpu`；`create_encoder` → `bm_encoder`（libavcodec 封装）。
+  - `bm_merger_cpu::on_merge_loop` 每轮 `prepare_cell`→host 合成→一次 H2D→回调，
+    `usleep(clamp(100ms-耗时,30,3000))`，目标 **10fps**。
+  - `prepare_cell` 是 **设备→host→设备** 的 CPU 合成（含 CvxText 标签），即生产合流同样走
+    JPEG 解码→合成→JPEG 编码，不是“设备帧直取”。
+  - `libEdgeSystem` 导入 `frameToJpegByCpu/jpegToFrameByCpu/get_jpeg_encoder`，预览走独立编码实例。
+- **证据**：`.work/re/REPORT.md`、`board_decompiled.c`、`*.symbols.txt`、`*.imports.txt`、
+  关键函数 `.asm`。

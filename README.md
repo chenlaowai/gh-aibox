@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 106
+iteration: 107
 updated: 2026-11-19
 commit: -
 -->
@@ -10,6 +10,12 @@ commit: -
 
 ## 当前状态
 
+- **2026-11-19 迭代 107（生产私有库逆向 + 合流提速）**：rea 不支持 AArch64 ELF，改用 Ghidra 12.1.4
+  headless 成功反编译 `libboard_sdk_bm.so` 的 `create_merger/bm_merger_cpu::on_merge_loop/prepare_cell/
+  bm_encoder`：生产合流也是 JPEG→host 合成→JPEG，按 **100ms 节拍（10fps）** 跑、编码在独立线程；
+  产物在 `.work/re/`。实测双 JPEG 锁会互相拖慢（合流 1.25fps），已回退单锁；把 `imencode` 的
+  NV12 改成 `bm_image_alloc_dev_mem` 后硬件 JPEG 恢复（+117/12s），**合流 2.66→3.83fps**、
+  34/36 有画面、dmabuf 映射 0、fd 592。下一步做合流编码线程解耦，目标 ≥8fps。
 - **2026-11-19 迭代 106（dma-buf 映射归零）**：定位到 Sophon OpenCV 的 `cv::Mat` 每个都走
   bmcv/ion dma-buf；把每任务标签牌（36×8=288 条）改成 HostMat、合流 black/no_task 与 fallback
   画布改 host buffer 后，**dmabuf 映射 290→0、dma-buf fd 586→0**、总 fd 930→589（34 路）。

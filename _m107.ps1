@@ -1,0 +1,6 @@
+$p='docs\PROGRESS.md'; $t=[IO.File]::ReadAllText($p); $t=$t.Replace('iteration: 106','iteration: 107'); [IO.File]::WriteAllText($p,$t)
+$r='README.md'; $t=[IO.File]::ReadAllText($r); $t=$t.Replace('iteration: 106','iteration: 107'); [IO.File]::WriteAllText($r,$t)
+$m='docs\PRODUCTION_MATRIX.md'; $t=[IO.File]::ReadAllText($m)
+$t=$t.Replace('| 合流墙帧率 | **2.7~6.3 fps**（`all_1`，10s 27~63 帧，~450-974KB/帧；随负载波动） |','| 合流墙帧率 | **3.8 fps**（`all_1`，12s 46 帧，~426KB/帧；JPU 编码分配改 dev_mem 后） |')
+$t=$t.Replace('| 单通道预览帧率 | **25K 1.5~4.9 fps / 4K 1.6 fps**（ADR-097 按源尺寸，随负载波动） |','| 单通道预览帧率 | **25K 1.4~4.9 fps / 4K 1.6 fps**（ADR-097 按源尺寸，随负载波动） |')
+[IO.File]::WriteAllText($m,$t)

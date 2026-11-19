@@ -675,7 +675,7 @@ public:
                 src = &img.data();
             } else if (bm_image_create(handle_, img.height(), img.width(), FORMAT_NV12,
                                        DATA_TYPE_EXT_1N_BYTE, &nv12, nullptr) == BM_SUCCESS) {
-                if (bm_image_alloc_contiguous_mem_heap_mask(1, &nv12, 6) == BM_SUCCESS) {
+                if (bm_image_alloc_dev_mem(nv12, 1) == BM_SUCCESS) {
                     if (bmcv_image_vpp_convert(handle_, 1, img.data(), &nv12, nullptr) ==
                         BM_SUCCESS) {
                         src = &nv12;
@@ -683,6 +683,7 @@ public:
                     }
                 }
                 if (!made) {
+                    ++hw_jpeg_fail_count();
                     bm_image_destroy(nv12);
                     nv12 = {};
                 }
@@ -697,18 +698,12 @@ public:
                                reinterpret_cast<unsigned char*>(jpg) + jsz);
                     std::free(jpg);
                     ++hw_jpeg_ok_count();
-                    if (made) {
-                        bm_image_free_contiguous_mem(1, &nv12);
-                        bm_image_destroy(nv12);
-                    }
+                    if (made) bm_image_destroy(nv12);
                     return true;
                 }
                 ++hw_jpeg_fail_count();
                 if (jpg) std::free(jpg);
-                if (made) {
-                    bm_image_free_contiguous_mem(1, &nv12);
-                    bm_image_destroy(nv12);
-                }
+                if (made) bm_image_destroy(nv12);
             }
         }        cv::Mat mat;
         if (bm_image_to_mat(img, mat) != 0 || mat.empty()) return false;
