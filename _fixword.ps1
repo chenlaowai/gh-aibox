@@ -1,8 +1,0 @@
-$m='docs\PRODUCTION_MATRIX.md'; $t=[IO.File]::ReadAllText($m)
-$t=$t.Replace('media_sdk/board_sdk 无此开销，**不替换这套栈无法归零** |','生产 **0 映射**（库不 mmap）；我方 290 个映射为库内 mmap，**固定不随路数增长** |')
-$t=$t.Replace('生产用 media_sdk/board_sdk 不导出 dma-buf，**不替换这套栈无法归零**。','生产有 135 个 dma-buf fd 但 **0 个进程映射**（库不 mmap）；我方 290 个映射是库内固定开销，**固定不随路数增长**。')
-[IO.File]::WriteAllText($m,$t)
-$k='docs\KNOWN-ISSUES.md'; $t=[IO.File]::ReadAllText($k)
-$t=$t.Replace('生产进程 **0 dma-buf 映射 / 0 dma-buf fd**（`/proc/<pid>/maps` 无 dmabuf），bufinfo 对象 593；','生产进程 **0 dma-buf 映射 / 135 个 dma-buf fd**（`/proc/<pid>/maps` 无 dmabuf），bufinfo 对象 593；')
-$t=$t.Replace('生产用闭源 media_sdk `DecodeInstance`，不导出 dma-buf；**不换解码器栈无法归零**。','生产用闭源 media_sdk `DecodeInstance`，分配 dma-buf 但**不做进程 mmap**；我方 290 个映射为库内固定 mmap（不随路数增长），**要归零需消除库内 mmap，暂未定位到开关**。')
-[IO.File]::WriteAllText($k,$t)
