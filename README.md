@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 70
-updated: 2026-11-19
+iteration: 71
+updated: 2026-11-20
 commit: -
 -->
 
@@ -10,6 +10,15 @@ commit: -
 
 ## 当前状态
 
+- **2026-11-20 修复（四十四）**：MP4 测试通道「连人都检不到」对齐生产。REA 反编译证实生产
+  `PeopleMethod`（人形主检测）→ `MinorVest/MinorHelmetDet/MinorCigaretteFeature/
+  MinorBoatLifeJacket`（裁剪再分类）两段式，deep 模式是 **0.6×W/H 四块瓦片（20% 重叠）**；
+  我们这里有两处不一致：① `postprocess_yolov5` 用 `obj*sigmoid(类别)` 计分，而
+  `people/people_big` 类别列恒 0 → 人形分数被乘 0.5（0.89→0.44），永远过不了 0.8 的
+  `threshold_for_people`；② deep 模式只换模型、整帧 letterbox（整帧 obj 0.05，0.6 瓦片 0.89）。
+  已改 obj 计分 + 4 瓦片 deep + 热更新保留 people_deep。实测测试_1 检出人形
+  best 0.84~0.94 并触发反光衣/抽烟/救生衣标签，18 路 MP4 全 ok。
+  部署 `aidetect:v1.0.4`。
 - **2026-11-19 修复（四十三）**：MP4 通道闪烁与告警视频丢失。根因是本地 MP4 直连解码
   **没有按帧率节流**（片源只有 3~9s，1 秒内播完 → 反复 EOF → 每次推黑底白字「正在重连」，
   实测 125 次/分），加上容器沿用 `NO_DUMP=1`/`ALARM_RING=0` 把 packet ring 与 sail dump
@@ -328,6 +337,11 @@ commit: -
     与迭代 50 的 VPP 花屏不是同一问题。
 13. RTSP 直连通道的告警视频由 `--dump-only` 独立进程生成，只有后置窗口、没有 pre-roll；
     要补 pre 需给这些相机受控的第二条会话，或把通道改回网关 fan-out。
+14. deep 人形模式每 1.2s 每任务 4 次 832×480 推理（CPU ~365%→465%）；TPU 吃紧时先调
+    `AIDETECT_PEOPLE_DEEP_INTERVAL_MS`，再考虑按 ROI 只裁有效区域。
+15. 生产 Minor 算法还有独立的 `boxesCropPolicy`（安全帽取头部/上半身、抽烟取上身），
+    我们目前统一取“人形框上 30%”；后续按 REA 结果逐个对齐裁剪比例与最小尺寸
+    （生产 `table_threshold` 62/63：人形最小 20×20px）。
 
 ## 5 分钟跑起来
 

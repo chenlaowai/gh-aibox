@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 70
-updated: 2026-11-19
+iteration: 71
+updated: 2026-11-20
 commit: -
 -->
 
@@ -59,6 +59,7 @@ commit: -
 | ADR-082 | 标签按开关动态拼接、底板构建期预渲染；预览 720p；并发默认 4 | 2026-11-13 | 生效 |
 | ADR-083 | 每算法独立节奏 + 每预览帧只缩放一次（对齐 requireScaled） | 2026-11-13 | 生效 |
 | ADR-084 | 检测裁剪改用缩放帧；性能对比必须在任务上量完成后测量 | 2026-11-13 | 生效 |
+| ADR-098 | 人形按 obj 计分（不乘类别 sigmoid）；deep 模式跑 4 块 0.6 瓦片 | 2026-11-20 | 生效 |
 | ADR-097 | MP4 直连解码按片源帧率节流、EOF 静默循环；packet ring 只在有网关 fan-out 的通道启用 | 2026-11-19 | 生效 |
 | ADR-096 | HEVC bsf 按候选临时启用，不得跨候选粘连 | 2026-11-14 | 生效 |
 | ADR-095 | 跟踪中间图/合流瓦片也池化，热路径零按帧分配 | 2026-11-14 | 生效 |
@@ -1513,3 +1514,18 @@ commit: -
   通道的告警视频只有后置窗口、没有 pre-roll；4K MP4 预览仍有 <1% 的底部彩条待查。
 - 别再改回：把 MP4 塞进 ffmpeg 网关 + 全通道 ring 会触发 codec-open 风暴耗尽 VPU
   会话（全盒 `Failed to open codec`，只能重启盒子，见 KI-040）。
+
+### ADR-098 人形按 obj 计分（不乘类别 sigmoid）；deep 模式跑 4 块 0.6 瓦片
+
+- 日期：2026-11-20（迭代 71）
+- 背景：MP4 测试通道（片源=生产告警视频）连人都检不到。REA 证实生产是
+  `PeopleMethod`（人形主检测）→ `MinorVest/MinorHelmetDet/MinorCigaretteFeature/
+  MinorBoatLifeJacket`（人形裁剪再分类）两段式；`enable_people_deep_mode` 对应
+  `get_deep_mode_board_boxes_from_any_detection`，把画面按 0.6×W/H 切 4 块（20% 重叠）
+  逐块推理再合并；`threshold_for_people` 默认 0.8 直接作用在 obj 上。
+- 决定：① `people`/`people_big` 设 `obj_only`，`postprocess_yolov5` 用 obj 计分且只出
+  1 类框（类别列恒 0，乘 sigmoid 会把 0.89 变 0.44）；② deep 任务按 0.6/0.4 四点切
+  4 块 + NMS 合并，结果按 `AIDETECT_PEOPLE_DEEP_INTERVAL_MS`（默认 1200ms）缓存；
+  ③ 热更新路径必须把 `people_deep` 写回基础人形 `ModelRuntime`。
+- 代价：deep 任务每 1.2s 多 4 次 832×480 推理（整机 CPU 约 +100%）；瓦片间隔是唯一节流旋钮。
+- 别再改回：整帧 letterbox 在 2.5K/4K 上会直接丢掉远处工人（实测 obj 0.05 vs 0.89）。

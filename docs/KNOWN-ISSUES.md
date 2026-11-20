@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 70
-updated: 2026-11-19
+iteration: 71
+updated: 2026-11-20
 commit: -
 -->
 
@@ -186,6 +186,27 @@ commit: -
   都打不开（`--dump-only` rc=124/5），`docker restart` 无效，**只能重启盒子**。
 - 预防：部署前先确认解码路径不产生“全通道同时重开”；改配置后看
   `Failed to open codec` 计数是否持续增长，一旦增长立即停手，别叠加实验。
+
+### KI-041（已修复）人形分数被类别 sigmoid 砍半，0.8 阈值永远不过
+
+- 现象：MP4 通道（生产告警视频片源）完全没有人形框，反光衣/安全帽/抽烟/救生衣全不触发。
+- 根因：`postprocess_yolov5` 用 `score = obj * sigmoid(class_logit)`；`people`/`people_big`
+  的 4 个类别列在导出模型里恒为 0，`sigmoid(0)=0.5`，0.89 的人形被记成 0.44，低于
+  `threshold_for_people`（生产默认 0.8，任务里常配 0.8）。生产按 obj 计分。
+- 修复（迭代 71）：`ModelSpec.obj_only`，people/people_big 用 obj 计分、只出 1 类框。
+- 验证：同帧人形 obj 0.89 → 检测框 score 0.89 → 反光衣/抽烟立即出框。
+- 别再改回：任何“给 people 乘类别概率”的写法都会让人形整体消失。
+
+### KI-042（已修复）deep 人形模式只换模型不切瓦片，远处的人直接消失
+
+- 现象：4K/2.5K 通道画面里明显有工人，模型一个框都不出（整帧 max_obj=0.05）。
+- 根因：整帧 letterbox 到 832×480 后远处工人只剩几十像素；生产 `enable_people_deep_mode`
+  实为 `get_deep_mode_board_boxes_from_any_detection`：按 0.6×W/H 切 4 块（20% 重叠）
+  逐块推理再合并（REA：字面量 0.6/0.4 + 长度 4 的矩形数组）。
+- 修复（迭代 71）：`run_detection()` 对 deep 任务跑 4 瓦片 + NMS，结果按
+  `AIDETECT_PEOPLE_DEEP_INTERVAL_MS`（默认 1200ms）缓存。
+- 验证：测试_1 同一帧 0.6 瓦片 obj 0.89（整帧 0.05），测试_6 4K best 0.887。
+- 代价：每任务每 1.2s 4 次推理，整机 CPU 约 +100%。
 
 ## 刻意为之的「坑」
 

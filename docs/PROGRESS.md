@@ -1,6 +1,6 @@
 <!-- pm:meta
-iteration: 70
-updated: 2026-11-19
+iteration: 71
+updated: 2026-11-20
 commit: -
 -->
 
@@ -9,6 +9,50 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 71 — 2026-11-20 — 人形检测对齐生产：obj 计分 + deep 模式 4 块 0.6 瓦片（v1.0.4）
+
+- **现象**：MP4 测试通道（片源=生产告警视频）完全不出人形框，反光衣/安全帽/抽烟/救生衣
+  也就永远不触发；Web 任务参数已与生产一致。
+- **REA/反编译结论（生产 `libEdgeSystem.so` 只读，符号+DWARF 可用）**：
+  - 生产是 **MajorMethod（人形/人头/人群）→ MinorMethod（反光衣/安全帽/抽烟/救生衣）
+    两段式**：`PeopleMethod` = 人形主检测；`MinorVest`/`MinorHelmetDet`/
+    `MinorCigaretteFeature`/`MinorBoatLifeJacket` 都从人形框裁剪再推理
+    （`boxesCropPolicy` 决定裁剪区，`MajorMethod::execute` 收 `vector<CropPolicy>`
+    说明一帧可跑多块裁剪）。**用户判断正确：六种算法都建立在人形检测之上。**
+  - 生产 `enable_people_deep_mode` 的真身是
+    `get_deep_mode_board_boxes_from_any_detection`：按 **0.6×W/H 切 4 块（20% 重叠）**
+    逐块推理再合并（字面量池 `0x1633d98 = 0.6`、`0x1633da0 = 0.4`，
+    `ldr d2` 后算 `w*0.6 / w-w*0.6`，矩形数组长度 4）。
+  - 生产人形阈值走 `getThresholdFromVideoTask(TaskSpace, "threshold_for_people")`，
+    `table_threshold` 默认 **0.8**（人形检测基础阈值），与任务配置一致。
+- **根因 1（人形分数被砍半）**：我们的 `postprocess_yolov5` 用
+  `score = obj * sigmoid(class_logit)`；`people/people_big` 的 4 个类别列在导出模型里
+  恒为 0 → `sigmoid(0)=0.5`，0.89 的人形变成 **0.44**，永远过不了 0.8 的
+  `threshold_for_people`。生产按 **obj 计分**（阈值 0.8 直接作用在 obj 上）。
+- **根因 2（deep 模式没实现）**：我们只把模型换成 `people_big`，仍把整帧
+  2560×1440 letterbox 进 832×480。实测同一帧：整帧 `max_obj=0.05`，
+  0.6 瓦片 `max_obj=0.89`——远处工人在整帧里直接消失。生产 deep 模式跑 4 块瓦片。
+- **根因 3（热更新丢 deep 标记）**：`update_config` 重建 `models_` 时没把
+  `people_deep` 写回基础人形 `ModelRuntime`，配置一旦热更新过 deep 就静默失效。
+- **修复**（`src/model.hpp`、`src/task.hpp`）：
+  - `ModelSpec.obj_only`：`people`/`people_big` 置 true，`postprocess_yolov5` 用 obj
+    计分且只出 1 个类别框；
+  - `infer_detection_rect()`：按裁剪矩形做 VPP crop+letterbox+推理+坐标回映射；
+  - `run_detection()`：`people_deep` 且帧 > 1.5×模型输入时，按 **0.6/0.4 四点切 4 块、
+    NMS 合并**，结果缓存 `people_deep_interval_ms_`（默认 1200ms，可
+    `AIDETECT_PEOPLE_DEEP_INTERVAL_MS` 调），避免每帧 4 次推理打满 TPU；
+  - 热更新路径补 `rt->config.people_deep = deep`。
+- **验证**（2026-11-20 11:25，容器 `aidetect:v1.0.4`，206.25）：
+  - 测试_1（2560×1440 排水渠告警片）：`deep people tiles=4 boxes=1 best=0.84~0.94`，
+    随后 `model=vest detections=1`、`model=smoking_call detections=1`；预览截图可见
+    同一人身上的三行标签「抽烟/打电话/玩手机」「未穿救生衣」「未穿反光衣」
+    （`docs/assets/mp4_deep_people_detected_20261120.jpg`）。
+  - 测试_6（3840×2160）同样 `deep ... boxes=1 best=0.887`。
+  - 18 路 MP4 **全部 ok**，整机 31 ok / 5 connecting（5 路均为 ISC upstream 无流）；
+    60 秒轮询 health **翻转 0 次**；CPU ~465%、RSS ~685MB。
+- **代价/遗留**：deep 模式每 1.2s 每任务 4 次 832×480 推理，整机 CPU 由 ~365% 升到
+  ~465%；`people_deep_interval_ms_` 是唯一节流旋钮。若后续 TPU 吃紧，先调大该间隔。
 
 ### 迭代 70 — 2026-11-19 — MP4 通道闪烁与告警视频丢失（v1.0.2 已部署 206.25）
 

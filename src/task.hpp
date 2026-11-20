@@ -147,6 +147,7 @@ public:
                 deep = deep || o->config.people_deep;
             }
             rt->config.conf = pc;
+            rt->config.people_deep = deep;
             log_info(cfg_.task_id + " people base conf=" + std::to_string(pc) +
                      " deep=" + (deep ? "1" : "0"));
         }
@@ -187,6 +188,8 @@ public:
         // share one TPU without starving a 4K, five-algorithm task.
         if (const char* dm = std::getenv("AIDETECT_DETECT_INTERVAL_MS"))
             detect_min_interval_ms_ = std::max(50, std::atoi(dm));
+        if (const char* pd = std::getenv("AIDETECT_PEOPLE_DEEP_INTERVAL_MS"))
+            people_deep_interval_ms_ = std::max(100, std::atoi(pd));
         if (const char* am = std::getenv("AIDETECT_ATTR_MODELS_PER_ROUND"))
             attr_models_per_round_ = std::max(1, std::atoi(am));
         if (const char* tt = std::getenv("AIDETECT_TARGET_TTL_MS"))
@@ -521,6 +524,10 @@ private:
         int64_t min_interval_ms = 0;
         int64_t last_run_ms = 0;
         bool confirmed = false;  // blue countdown passed -> red until target gone
+        // Deep people mode: last merged 4-tile detections + their timestamp, so
+        // the 4 VPP/TPU passes run at a bounded cadence instead of every frame.
+        std::vector<Detection> deep_dets;
+        int64_t deep_ms = 0;
         int64_t first_seen_ms = 0;
         int64_t last_seen_ms = 0;
         int64_t last_alarm_ms = 0;
@@ -1034,6 +1041,113 @@ private:
         return nullptr;
     }
 
+    // Run one detection model on a sub-rect of the frame and return boxes in
+    // frame coordinates.  Production's deep mode (get_deep_mode_board_boxes_
+    // from_any_detection) uses exactly this: crop with padding, infer, then map
+    // the boxes back by the crop origin.
+    std::vector<Detection> infer_detection_rect(ModelRuntime& rt, sail::BMImage& frame,
+                                                sail::Handle& handle, sail::Bmcv& bmcv,
+                                                int rx, int ry, int rw, int rh) {
+        int net_w = rt.spec->input_w > 0 ? rt.spec->input_w : 640;
+        int net_h = rt.spec->input_h > 0 ? rt.spec->input_h : 640;
+        if (rw <= 0 || rh <= 0) return {};
+        float r = std::min(static_cast<float>(net_w) / rw,
+                           static_cast<float>(net_h) / rh);
+        int tw = static_cast<int>(std::round(rw * r));
+        int th = static_cast<int>(std::round(rh * r));
+        int tx = (net_w - tw) / 2;
+        int ty = (net_h - th) / 2;
+        sail::PaddingAtrr pad;
+        pad.set_stx(tx);
+        pad.set_sty(ty);
+        pad.set_w(tw);
+        pad.set_h(th);
+        pad.set_r(114);
+        pad.set_g(114);
+        pad.set_b(114);
+        sail::BMImage* resized = pooled_frame(
+            handle, frame.format(), DATA_TYPE_EXT_1N_BYTE, net_w, net_h);
+        sail::BMImage* pre = pooled_frame(
+            handle, FORMAT_RGB_PLANAR, DATA_TYPE_EXT_FLOAT32, net_w, net_h);
+        if (!resized || !pre) return {};
+        if (bmcv.vpp_crop_and_resize_padding(frame, *resized, rx, ry, rw, rh,
+                                             net_w, net_h, pad,
+                                             bmcv_resize_algorithm::BMCV_INTER_LINEAR) != 0)
+            return {};
+        bmcv.convert_to(*resized, *pre,
+                        std::make_tuple(
+                            std::make_pair(rt.spec->alpha, rt.spec->beta),
+                            std::make_pair(rt.spec->alpha, rt.spec->beta),
+                            std::make_pair(rt.spec->alpha, rt.spec->beta)));
+        InferOutput out = scheduler_.infer(*rt.spec, *pre, handle, bmcv);
+        std::vector<Detection> dets;
+        if (rt.spec->type == ModelType::Damo) {
+            dets = postprocess_damo(out, rt, rw, rh, r, tx, ty);
+        } else if (rt.spec->type == ModelType::YoloV5) {
+            dets = postprocess_yolov5(out, rt, rw, rh, r, tx, ty);
+        } else if (rt.spec->type == ModelType::YoloV8) {
+            dets = postprocess_yolov8(out, rt, rw, rh, r, tx, ty);
+        } else if (rt.spec->type == ModelType::YoloV10) {
+            dets = postprocess_yolov10(out, rt, rw, rh, r, tx, ty);
+        } else if (rt.spec->type == ModelType::CrowdHead) {
+            dets = postprocess_crowd(out, rt, rw, rh, r, tx, ty);
+        } else {
+            dets = postprocess_yolo(out, rt, rw, rh, r, tx, ty);
+        }
+        if (rx != 0 || ry != 0) {
+            for (auto& d : dets) {
+                d.x1 += rx;
+                d.y1 += ry;
+                d.x2 += rx;
+                d.y2 += ry;
+            }
+        }
+        return dets;
+    }
+    // Base person detection.  Production's `enable_people_deep_mode` runs the
+    // person detector on four 0.6-scale tiles (20% overlap) instead of the
+    // whole frame: a 2560x1440 channel letterboxed into 832x480 loses small
+    // workers entirely, while the same person in a 1536x864 tile scores >0.9.
+    // Without deep mode (or on small frames) a single full-frame pass is used.
+    std::vector<Detection> run_detection(ModelRuntime& rt, sail::BMImage& frame,
+                                         sail::Handle& handle, sail::Bmcv& bmcv,
+                                         int w, int h) {
+        int net_w = rt.spec->input_w > 0 ? rt.spec->input_w : 640;
+        int net_h = rt.spec->input_h > 0 ? rt.spec->input_h : 640;
+        const bool deep = rt.base_only && rt.config.people_deep &&
+                          (w > net_w * 3 / 2 || h > net_h * 3 / 2);
+        if (!deep) return infer_detection_rect(rt, frame, handle, bmcv, 0, 0, w, h);
+        const int64_t now = now_ms();
+        if (rt.deep_ms > 0 && now - rt.deep_ms < people_deep_interval_ms_)
+            return rt.deep_dets;
+        // 0.6 tile with the second tile anchored at w-tile_w: 4 rects, 20%
+        // overlap, exactly the geometry production builds in
+        // get_deep_mode_board_boxes_from_any_detection.
+        const float k = 0.6f;
+        const int tw = std::max(1, static_cast<int>(w * k));
+        const int th = std::max(1, static_cast<int>(h * k));
+        const int xs[2] = {0, std::max(0, w - tw)};
+        const int ys[2] = {0, std::max(0, h - th)};
+        std::vector<Detection> dets;
+        for (int yi = 0; yi < 2; ++yi) {
+            for (int xi = 0; xi < 2; ++xi) {
+                auto part = infer_detection_rect(rt, frame, handle, bmcv,
+                                                 xs[xi], ys[yi], tw, th);
+                dets.insert(dets.end(), part.begin(), part.end());
+            }
+        }
+        dets = nms(dets, 0.5f);
+        rt.deep_dets = dets;
+        rt.deep_ms = now;
+        if (rt.base_only && !dets.empty() && now - rt.last_log_ms >= 5000) {
+            rt.last_log_ms = now;
+            float best = 0.f;
+            for (auto& d : dets) best = std::max(best, d.score);
+            log_info(cfg_.task_id + " deep people tiles=4 boxes=" +
+                     std::to_string(dets.size()) + " best=" + std::to_string(best));
+        }
+        return dets;
+    }
     void detect(sail::BMImage& frame, sail::Handle& handle, sail::Bmcv& bmcv,
                 int64_t frame_ts) {
         const int64_t prof_t0 = now_ms();
@@ -1088,52 +1202,7 @@ private:
                 rt->spec->type == ModelType::YoloV5Crop ||
                 rt->spec->type == ModelType::BoatLifeJacket)
                 continue;
-            int net_w = rt->spec->input_w > 0 ? rt->spec->input_w : 640;
-            int net_h = rt->spec->input_h > 0 ? rt->spec->input_h : 640;
-            float r = std::min(static_cast<float>(net_w) / w,
-                               static_cast<float>(net_h) / h);
-            int tw = static_cast<int>(std::round(w * r));
-            int th = static_cast<int>(std::round(h * r));
-            int tx = (net_w - tw) / 2;
-            int ty = (net_h - th) / 2;
-            sail::PaddingAtrr pad;
-            pad.set_stx(tx);
-            pad.set_sty(ty);
-            pad.set_w(tw);
-            pad.set_h(th);
-            pad.set_r(114);
-            pad.set_g(114);
-            pad.set_b(114);
-            sail::BMImage* resized = pooled_frame(
-                handle, frame.format(), DATA_TYPE_EXT_1N_BYTE, net_w, net_h);
-            sail::BMImage* pre = pooled_frame(
-                handle, FORMAT_RGB_PLANAR, DATA_TYPE_EXT_FLOAT32, net_w, net_h);
-            if (!resized || !pre) continue;
-            if (bmcv.vpp_crop_and_resize_padding(frame, *resized, 0, 0, w, h,
-                                                 net_w, net_h, pad,
-                                                 bmcv_resize_algorithm::BMCV_INTER_LINEAR) != 0)
-                continue;
-            bmcv.convert_to(*resized, *pre,
-                            std::make_tuple(
-                                std::make_pair(rt->spec->alpha, rt->spec->beta),
-                                std::make_pair(rt->spec->alpha, rt->spec->beta),
-                                std::make_pair(rt->spec->alpha, rt->spec->beta)));
-            InferOutput out = scheduler_.infer(*rt->spec, *pre, handle, bmcv);
-            if (rt->spec->type == ModelType::YoloV10Crop) continue;
-            std::vector<Detection> dets;
-            if (rt->spec->type == ModelType::Damo) {
-                dets = postprocess_damo(out, *rt, w, h, r, tx, ty);
-            } else if (rt->spec->type == ModelType::YoloV5) {
-                dets = postprocess_yolov5(out, *rt, w, h, r, tx, ty);
-            } else if (rt->spec->type == ModelType::YoloV8) {
-                dets = postprocess_yolov8(out, *rt, w, h, r, tx, ty);
-            } else if (rt->spec->type == ModelType::YoloV10) {
-                dets = postprocess_yolov10(out, *rt, w, h, r, tx, ty);
-            } else if (rt->spec->type == ModelType::CrowdHead) {
-                dets = postprocess_crowd(out, *rt, w, h, r, tx, ty);
-            } else {
-                dets = postprocess_yolo(out, *rt, w, h, r, tx, ty);
-            }
+            std::vector<Detection> dets = run_detection(*rt, frame, handle, bmcv, w, h);
             dets = filter_roi(dets, *rt, w, h);
             if (rt->base_only && !dets.empty()) {
                 // The 4K construction feeds occasionally produce a very wide
@@ -1715,7 +1784,10 @@ private:
         int n = shape[1];
         int cols = shape[2];
         bool no_class = (cols == 5);
-        int nc = no_class ? 1 : cols - 5;
+        // people/people_big carry a zeroed class head: the box score is the
+        // objectness column (production threshold 0.8 applies to it directly).
+        const bool obj_only = no_class || rt.spec->obj_only;
+        int nc = obj_only ? 1 : cols - 5;
         auto sig = [](float v) { return 1.0f / (1.0f + std::exp(-v)); };
         std::vector<Detection> raw;
         for (int i = 0; i < n; ++i) {
@@ -1726,7 +1798,7 @@ private:
             if (x2 < x1) std::swap(x1, x2);
             if (y2 < y1) std::swap(y1, y2);
             for (int c = 0; c < nc; ++c) {
-                float s = obj * (no_class ? 1.0f : sig(q[5 + c]));
+                float s = obj_only ? obj : obj * sig(q[5 + c]);
                 if (s < rt.config.conf) continue;
                 Detection d;
                 d.score = s;
@@ -2700,6 +2772,7 @@ private:
                 deep = deep || o->config.people_deep;
             }
             rt->config.conf = pc;
+            rt->config.people_deep = deep;
             log_info(tc.task_id + " people base conf=" + std::to_string(pc) +
                      " deep=" + (deep ? "1" : "0"));
         }
@@ -4712,6 +4785,7 @@ private:
     std::atomic<bool> preview_busy_{false};
     // Inference demand controls (see constructor).
     int detect_min_interval_ms_ = 350;   // per-task detect cadence cap (2.9 Hz)
+    int people_deep_interval_ms_ = 1200;  // 4-tile deep people pass cadence
     size_t attr_models_per_round_ = 1000;  // 1000 = every crop algorithm each round
     size_t attr_turn_ = 0;               // round-robin cursor
     int max_crop_persons_ = 4;           // persons classified per round

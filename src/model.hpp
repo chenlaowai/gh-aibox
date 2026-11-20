@@ -37,6 +37,11 @@ struct ModelSpec {
     int attr_class = 0;         // AttrClassifier: violation class
     float attr_thresh = 0.5f;   // AttrClassifier: alarm threshold
     int target_id2 = -1;        // optional second target class
+    // Production people/people_big plugins score a box by objectness only: the
+    // 4 class columns stay at 0 in the exported model, and multiplying by
+    // sigmoid(0)=0.5 would halve every person score (0.89 -> 0.44) so the
+    // 0.8 people threshold could never pass.
+    bool obj_only = false;
 };
 
 struct ModelConfig;
@@ -153,7 +158,8 @@ inline std::vector<ModelSpec> make_model_specs(const std::string& root) {
                  0.0f,
                  640,
                  384,
-                 true});
+                 true,
+                 0, 0, 0.0f, -1, true});
     // Production "people_big" plugin (enable_people_deep_mode): input 832x480,
     // output [1,8190,9]. This is the real large-resolution people detector,
     // not a 2x2 tiling hack.
@@ -168,7 +174,8 @@ inline std::vector<ModelSpec> make_model_specs(const std::string& root) {
                  0.0f,
                  832,
                  480,
-                 true});
+                 true,
+                 0, 0, 0.0f, -1, true});
     v.push_back({"behavior",
                  root + "/plugins/behavior.bmodel",
                  ModelType::YoloV5,
@@ -653,3 +660,4 @@ private:
 };
 
 }  // namespace aidetect
+
