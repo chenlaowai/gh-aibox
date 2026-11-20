@@ -41,8 +41,21 @@ struct Detection {
     bool suppress_label = false; // confirmed but inside report interval
     float vx = 0, vy = 0;  // px/s, extrapolate between detections
     int countdown_s = 0;    // blue countdown seconds
+    // Base person / head box from the person detector: production draws these
+    // as blue "target detection" boxes even before any algorithm fires.
+    bool base_person = false;
     std::string label;
 };
+// IoU between two boxes; used to hide the blue base person box underneath the
+// red attribute box of the same person (production draws one box per person).
+inline float det_iou(const Detection& a, const Detection& b) {
+    float x1 = std::max(a.x1, b.x1), y1 = std::max(a.y1, b.y1);
+    float x2 = std::min(a.x2, b.x2), y2 = std::min(a.y2, b.y2);
+    float w = std::max(0.f, x2 - x1), h = std::max(0.f, y2 - y1);
+    float inter = w * h;
+    float ua = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter;
+    return ua > 0 ? inter / ua : 0.f;
+}
 using PreviewCallback = std::function<void(const std::string& task_id, int group, int slot,
                                            const std::vector<unsigned char>& jpeg)>;
 using SinglePreviewCallback = std::function<void(const std::string& task_id,
@@ -146,9 +159,15 @@ public:
                 pc = std::max(pc, o->config.people_conf);
                 deep = deep || o->config.people_deep;
             }
-            rt->config.conf = pc;
+            // Draw/crop every plausible person (people_draw_conf_, default 0.5)
+            // but keep the production report threshold (threshold_for_people,
+            // usually 0.8) for the crop/classify gate.  A 0.8-only pass leaves
+            // small workers with no box at all on 1080p/4K channels.
             rt->config.people_deep = deep;
+            rt->report_conf = pc;
+            rt->config.conf = std::min(pc, people_draw_conf_);
             log_info(cfg_.task_id + " people base conf=" + std::to_string(pc) +
+                     " draw_conf=" + std::to_string(rt->config.conf) +
                      " deep=" + (deep ? "1" : "0"));
         }
         if (need_person) add_base("head");
@@ -196,6 +215,12 @@ public:
             target_ttl_ms_ = std::max(500, std::atoi(tt));
         if (const char* ap = std::getenv("AIDETECT_CROP_PERSONS"))
             max_crop_persons_ = std::max(1, std::atoi(ap));
+        if (const char* aw = std::getenv("AIDETECT_ATTR_MIN_CROP_W"))
+            attr_min_crop_w_ = std::max(8, std::atoi(aw));
+        if (const char* ah = std::getenv("AIDETECT_ATTR_MIN_CROP_H"))
+            attr_min_crop_h_ = std::max(8, std::atoi(ah));
+        if (const char* pcv = std::getenv("AIDETECT_PEOPLE_DRAW_CONF"))
+            people_draw_conf_ = std::max(0.05f, static_cast<float>(std::atof(pcv)));
         if (const char* tw = std::getenv("AIDETECT_TILE_WIDTH")) tile_w_ = std::max(160, std::atoi(tw));
         if (const char* th = std::getenv("AIDETECT_TILE_HEIGHT")) tile_h_ = std::max(90, std::atoi(th));
         if (std::getenv("AIDETECT_NO_PREVIEW")) no_preview_ = true;
@@ -524,6 +549,7 @@ private:
         int64_t min_interval_ms = 0;
         int64_t last_run_ms = 0;
         bool confirmed = false;  // blue countdown passed -> red until target gone
+        float report_conf = 0.0f;  // production threshold_for_people for this task
         // Deep people mode: last merged 4-tile detections + their timestamp, so
         // the 4 VPP/TPU passes run at a bounded cadence instead of every frame.
         std::vector<Detection> deep_dets;
@@ -1256,7 +1282,15 @@ private:
         // what multiplied the TPU demand.  Production's people threshold is
         // 0.85 and it skips frames per algorithm, so it never reaches that
         // fan-out.
-        std::vector<Detection> crop_persons = base;
+        // Only persons at/above the production people threshold are classified;
+        // lower-confidence persons still get their blue box.
+        float people_report_conf = 0.0f;
+        for (auto& rt : models_)
+            if (rt->spec && (rt->spec->name == "people" || rt->spec->name == "people_big"))
+                people_report_conf = std::max(people_report_conf, rt->report_conf);
+        std::vector<Detection> crop_persons;
+        for (auto& d : base)
+            if (d.score >= people_report_conf) crop_persons.push_back(d);
         std::sort(crop_persons.begin(), crop_persons.end(),
                   [](const Detection& a, const Detection& b) {
                       return (a.x2 - a.x1) * (a.y2 - a.y1) >
@@ -1294,6 +1328,9 @@ private:
                 };
                 for (auto& p : crop_persons) {
                     if (p.class_id != 0 || p.x2 <= p.x1 || p.y2 <= p.y1) continue;
+                    if (p.x2 - p.x1 < attr_min_crop_w_ ||
+                        p.y2 - p.y1 < attr_min_crop_h_)
+                        continue;
                     // Production helmet crop: person box top 70%, like the
                     // 4-class helmet model. V3 class 0 = 未戴安全帽,
                     // class 1 = 安全帽, class 2 = 人员.
@@ -1332,6 +1369,8 @@ private:
                     if (cols < 7) continue;
                     bool has_helmet = false, has_no_helmet = false;
                     float best_no = 0.0f, best_helmet = 0.0f;
+                    // Head box of the best no-helmet detection, in crop space.
+                    float hx1 = 0, hy1 = 0, hx2 = 0, hy2 = 0;
                     for (size_t i = 0; i + 1 < t.data.size() / cols; ++i) {
                         const float* q = t.data.data() + i * cols;
                         // Output order is [未戴安全帽, 安全帽, 人员]; the
@@ -1343,7 +1382,10 @@ private:
                         if (s_helmet >= helmet_th) has_helmet = true;
                         if (s_no >= no_helmet_th) {
                             has_no_helmet = true;
-                            if (s_no > best_no) best_no = s_no;
+                            if (s_no > best_no) {
+                                best_no = s_no;
+                                hx1 = q[0]; hy1 = q[1]; hx2 = q[2]; hy2 = q[3];
+                            }
                         }
                     }
                     if (now_ms() - rt->last_log_ms >= 2000) {
@@ -1360,6 +1402,31 @@ private:
                     // scored no=0.809, helmet=1.0 and were skipped).
                     if (!has_no_helmet) continue;
                     Detection d = p;
+                    // Production's 安全帽V3 is a head detector: the alarm box is
+                    // the detected head, not the whole person.  Map it from the
+                    // 256x256 letterboxed crop back to frame coordinates and
+                    // clamp it inside the person box so the tracker still has
+                    // the person anchor.
+                    {
+                        const int padx = (nw - tw) / 2;
+                        const int pady = (nh - th) / 2;
+                        if (r > 0 && hx2 > hx1 && hy2 > hy1) {
+                            float fx1 = cx + (hx1 - padx) / r;
+                            float fy1 = cy + (hy1 - pady) / r;
+                            float fx2 = cx + (hx2 - padx) / r;
+                            float fy2 = cy + (hy2 - pady) / r;
+                            fx1 = std::max(fx1, p.x1);
+                            fy1 = std::max(fy1, p.y1);
+                            fx2 = std::min(fx2, p.x2);
+                            fy2 = std::min(fy2, p.y2);
+                            if (fx2 - fx1 >= 8 && fy2 - fy1 >= 8) {
+                                d.x1 = fx1;
+                                d.y1 = fy1;
+                                d.x2 = fx2;
+                                d.y2 = fy2;
+                            }
+                        }
+                    }
                     d.score = best_no;
                     d.class_id = rt->spec->target_id;
                     d.target = true;
@@ -1401,6 +1468,9 @@ private:
                 };
                 for (auto& p : crop_persons) {
                     if (p.class_id != 0 || p.x2 <= p.x1 || p.y2 <= p.y1) continue;
+                    if (p.x2 - p.x1 < attr_min_crop_w_ ||
+                        p.y2 - p.y1 < attr_min_crop_h_)
+                        continue;
                     float pw = p.x2 - p.x1, ph = p.y2 - p.y1;
                     int cx = std::max(0, static_cast<int>(p.x1 - pw * 0.05f));
                     int cy = std::max(0, static_cast<int>(p.y1 - ph * 0.05f));
@@ -1480,6 +1550,9 @@ private:
             std::vector<Detection> attrs;
             for (auto& p : crop_persons) {
                 if (p.class_id != 0 || p.x2 <= p.x1 || p.y2 <= p.y1) continue;
+                    if (p.x2 - p.x1 < attr_min_crop_w_ ||
+                        p.y2 - p.y1 < attr_min_crop_h_)
+                        continue;
                 int cx = std::max(0, static_cast<int>(p.x1));
                 int cy = std::max(0, static_cast<int>(p.y1));
                 int cw = std::min(w - cx, static_cast<int>(p.x2 - p.x1));
@@ -1526,7 +1599,11 @@ private:
                     return std::exp(t.data[std::max(0, ac)]) / (sum + 1e-9f);
                 };
                 float need = rt->config.attr_thresh > 0 ? rt->config.attr_thresh : rt->spec->attr_thresh;
-                float prob = classify(rt->spec->name == "helmet" ? 0.70f : 0.30f);
+                // Production's MinorVest crop policy keeps the whole person box
+                // (RE: CropPolicy 0x20/0x22 = 255/255, i.e. 100% width/height);
+                // the old top-30% crop only showed the head, so every worker
+                // was classified as "no vest".  Helmet still uses the upper 70%.
+                float prob = classify(rt->spec->name == "helmet" ? 0.70f : 1.00f);
                 // Helmet: a second full-person crop recovers heads clipped by
                 // the top-70% box, but only runs for uncertain cases.
                 if (prob >= 0 && prob < need && rt->spec->name == "helmet") {
@@ -1567,6 +1644,9 @@ private:
             std::vector<Detection> beh;
             for (auto& p : crop_persons) {
                 if (p.class_id != 0 || p.x2 <= p.x1 || p.y2 <= p.y1) continue;
+                    if (p.x2 - p.x1 < attr_min_crop_w_ ||
+                        p.y2 - p.y1 < attr_min_crop_h_)
+                        continue;
                 int cx = std::max(0, static_cast<int>(p.x1));
                 int cy = std::max(0, static_cast<int>(p.y1));
                 int cw = std::min(w - cx, static_cast<int>(p.x2 - p.x1));
@@ -2191,24 +2271,72 @@ private:
         std::vector<std::pair<cv::Mat, cv::Point>> plate_draws;
         std::vector<cv::Rect> label_rects;
         for (auto& d : dets) {
-            // Preview must show alarm targets only. Non-target classes from a
-            // generic detector (cars/people/boats) otherwise paint dozens of
-            // meaningless green boxes over the scene.
-            if (!d.target && !d.pending && !d.confirmed) continue;
-            cv::Scalar color = d.pending ? cv::Scalar(255, 0, 0) : (d.target ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0));
+            // Production draws the base person/head detection box in blue even
+            // when no algorithm fires; attribute results then attach a label
+            // to that same box (blue while the countdown runs, red once the
+            // alarm is confirmed).
+            if (!d.target && !d.pending && !d.confirmed && !d.base_person) continue;
+            if (d.base_person) {
+                bool covered = false;
+                for (auto& o : dets) {
+                    if (o.base_person) continue;
+                    if (!o.pending && !o.confirmed && !o.target) continue;
+                    if (det_iou(d, o) > 0.4f) { covered = true; break; }
+                }
+                if (covered) continue;
+                cv::rectangle(canvas,
+                              cv::Rect(static_cast<int>(d.x1 * sx), static_cast<int>(d.y1 * sy),
+                                       static_cast<int>((d.x2 - d.x1) * sx),
+                                       static_cast<int>((d.y2 - d.y1) * sy)),
+                              cv::Scalar(255, 0, 0), 2);
+                continue;
+            }
+            // Blue while pending (alarm target present, countdown running),
+            // red once confirmed.
+            cv::Scalar color = d.pending ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255);
             cv::rectangle(canvas,
                           cv::Rect(static_cast<int>(d.x1 * sx), static_cast<int>(d.y1 * sy),
                                    static_cast<int>((d.x2 - d.x1) * sx),
                                    static_cast<int>((d.y2 - d.y1) * sy)),
                           color, 2);
             if (d.pending) {
-                std::string cd = std::to_string(d.countdown_s) + "s";
-                cv::putText(canvas, cd,
-                            cv::Point(static_cast<int>(d.x1 * sx) + 4,
-                                      static_cast<int>(d.y1 * sy) + 22),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 0, 0), 2);
-                // Blue pending stage: countdown only, no alarm label until
-                // the target is confirmed.
+                // Blue plate + white text, like production's "target present
+                // but not confirmed yet" state.
+                std::string text = d.label;
+                if (d.countdown_s > 0)
+                    text += " " + std::to_string(d.countdown_s) + "s";
+                int pbase = 0;
+                cv::Size pts;
+                if (font_ok_ && ft2_) {
+                    try {
+                        pts = ft2_->getTextSize(text, 28, 1, &pbase);
+                    } catch (...) {
+                        font_ok_ = false;
+                    }
+                }
+                if (!font_ok_) {
+                    pts = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.6, 1, &pbase);
+                }
+                int plw = pts.width + 12;
+                int plh = pts.height + 8;
+                int plx = static_cast<int>(d.x1 * sx);
+                int ply = static_cast<int>(d.y1 * sy) - plh;
+                if (ply < 0) ply = static_cast<int>(d.y2 * sy) + 2;
+                if (plx + plw > canvas.cols) plx = std::max(0, canvas.cols - plw);
+                if (ply + plh > canvas.rows) ply = std::max(0, canvas.rows - plh);
+                cv::rectangle(canvas, cv::Rect(plx, ply, plw, plh),
+                              cv::Scalar(255, 0, 0), cv::FILLED);
+                if (font_ok_ && ft2_) {
+                    try {
+                        ft2_->putText(canvas, text, cv::Point(plx + 6, ply + 4), 28,
+                                      cv::Scalar(255, 255, 255), 1, cv::LINE_AA, false);
+                    } catch (...) {
+                    }
+                } else {
+                    cv::putText(canvas, text, cv::Point(plx + 6, ply + plh - 6),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                                cv::Scalar(255, 255, 255), 1);
+                }
                 continue;
             }
             // Keep the label visible for confirmed targets even when the
@@ -2771,9 +2899,11 @@ private:
                 pc = std::max(pc, o->config.people_conf);
                 deep = deep || o->config.people_deep;
             }
-            rt->config.conf = pc;
             rt->config.people_deep = deep;
+            rt->report_conf = pc;
+            rt->config.conf = std::min(pc, people_draw_conf_);
             log_info(tc.task_id + " people base conf=" + std::to_string(pc) +
+                     " draw_conf=" + std::to_string(rt->config.conf) +
                      " deep=" + (deep ? "1" : "0"));
         }
         std::vector<std::vector<std::pair<float, float>>> new_rois;
@@ -3670,9 +3800,27 @@ private:
                 track_img_w_ = tw0;
                 track_img_h_ = th0;
             }
+            std::vector<Detection> base_persons = persons;
             dets = track_preview_boxes(preview_img_, track_img_, bmcv,
                                        std::move(dets), std::move(persons),
                                        selected_ts, now);
+            // Draw the base person/head boxes as blue target boxes, like the
+            // production live view.  They are appended after tracking so they
+            // never take part in the alarm-label association, and inserted at
+            // the front so a confirmed (red) attribute box is drawn on top.
+            std::vector<Detection> base_boxes;
+            base_boxes.reserve(base_persons.size());
+            for (auto& p : base_persons) {
+                Detection b = p;
+                b.base_person = true;
+                b.target = false;
+                b.pending = false;
+                b.confirmed = false;
+                b.countdown_s = 0;
+                b.label.clear();
+                base_boxes.push_back(std::move(b));
+            }
+            dets.insert(dets.begin(), base_boxes.begin(), base_boxes.end());
         }
         const int64_t pv_t_track = now_ms();
         try {
@@ -3777,7 +3925,16 @@ private:
             sail::BMImage bgr = bmcv.vpp_convert_format(tile_img_, FORMAT_BGR_PACKED);
             draw_roi_bm(bmcv, bgr, tw, th);
             for (auto& d : dets) {
-                if (!d.target && !d.pending && !d.confirmed) continue;
+                if (!d.target && !d.pending && !d.confirmed && !d.base_person) continue;
+                if (d.base_person) {
+                    bool covered = false;
+                    for (auto& o : dets) {
+                        if (o.base_person) continue;
+                        if (!o.pending && !o.confirmed && !o.target) continue;
+                        if (det_iou(d, o) > 0.4f) { covered = true; break; }
+                    }
+                    if (covered) continue;
+                }
                 int x = static_cast<int>(d.x1 * sx);
                 int y = static_cast<int>(d.y1 * sy);
                 int w = static_cast<int>((d.x2 - d.x1) * sx);
@@ -3791,7 +3948,9 @@ private:
                 if (x + w > tw) w = tw - x;
                 if (y + h > th) h = th - y;
                 std::tuple<int, int, int> color =
-                    d.pending ? std::make_tuple(255, 0, 0) : (d.target ? std::make_tuple(0, 0, 255) : std::make_tuple(0, 255, 0));
+                    (d.base_person || d.pending)
+                        ? std::make_tuple(255, 0, 0)
+                        : (d.target ? std::make_tuple(0, 0, 255) : std::make_tuple(0, 255, 0));
                 bmcv.rectangle(bgr, x, y, w, h, color, 2);
             }
             {
@@ -3857,7 +4016,16 @@ private:
             if (with_roi) draw_roi_bm(bmcv, bgr, tw, th);
             std::vector<std::tuple<int, int, int, int>> label_rects;
             for (auto& d : dets) {
-                if (!d.target && !d.pending && !d.confirmed) continue;
+                if (!d.target && !d.pending && !d.confirmed && !d.base_person) continue;
+                if (d.base_person) {
+                    bool covered = false;
+                    for (auto& o : dets) {
+                        if (o.base_person) continue;
+                        if (!o.pending && !o.confirmed && !o.target) continue;
+                        if (det_iou(d, o) > 0.4f) { covered = true; break; }
+                    }
+                    if (covered) continue;
+                }
                 int x = static_cast<int>(d.x1 * sx);
                 int y = static_cast<int>(d.y1 * sy);
                 int w = static_cast<int>((d.x2 - d.x1) * sx);
@@ -3871,7 +4039,9 @@ private:
                 if (x + w > tw) w = tw - x;
                 if (y + h > th) h = th - y;
                 std::tuple<int, int, int> color =
-                    d.pending ? std::make_tuple(255, 0, 0) : (d.target ? std::make_tuple(0, 0, 255) : std::make_tuple(0, 255, 0));
+                    (d.base_person || d.pending)
+                        ? std::make_tuple(255, 0, 0)
+                        : (d.target ? std::make_tuple(0, 0, 255) : std::make_tuple(0, 255, 0));
                 int rrc = bmcv.rectangle(bgr, x, y, w, h, color, 2);
                 if (rrc != 0 && !rect_warned_) {
                     log_warn(cfg_.task_id + " bmcv.rectangle rc=" + std::to_string(rrc));
@@ -4784,11 +4954,17 @@ private:
     bool preview_has_work_ = false;
     std::atomic<bool> preview_busy_{false};
     // Inference demand controls (see constructor).
+    float people_draw_conf_ = 0.5f;      // base person boxes/crops below report_conf
     int detect_min_interval_ms_ = 350;   // per-task detect cadence cap (2.9 Hz)
     int people_deep_interval_ms_ = 1200;  // 4-tile deep people pass cadence
     size_t attr_models_per_round_ = 1000;  // 1000 = every crop algorithm each round
     size_t attr_turn_ = 0;               // round-robin cursor
     int max_crop_persons_ = 4;           // persons classified per round
+    // A 4-head attribute classifier on a 30-40px-wide person crop is pure
+    // noise (every worker comes back "no vest").  Production runs these on 4K
+    // streams where a person is 200+ px; skip crops too small to classify.
+    int attr_min_crop_w_ = 40;
+    int attr_min_crop_h_ = 80;
     int64_t max_alg_interval_ms_ = 0;    // largest per-algorithm interval
     int64_t person_grace_ms_ = 900;      // keep a label while its algo skips
     int64_t last_pvprof_ms_ = 0;         // preview path profiling throttle
@@ -4841,3 +5017,9 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
+
+
+
+
+

@@ -81,9 +81,21 @@ set_target_properties(tile_probe PROPERTIES
     BUILD_RPATH "${SAIL_HOME}/lib;${LIBSOPHON_HOME}/lib;${OPENCV_HOME}/lib"
     INSTALL_RPATH "${SAIL_HOME}/lib;${LIBSOPHON_HOME}/lib;${OPENCV_HOME}/lib")
 
+
+add_executable(attr_probe tools/attr_probe.cpp)
+target_compile_definitions(attr_probe PRIVATE USE_BMCV=1 USE_OPENCV=1)
+target_link_libraries(attr_probe PRIVATE
+    sail bmcv bmrt bmlib yuv bmjpuapi bmjpulite
+    opencv_core opencv_imgproc opencv_imgcodecs opencv_videoio opencv_highgui
+    Boost::system OpenSSL::SSL OpenSSL::Crypto Threads::Threads dl)
+set_target_properties(attr_probe PROPERTIES
+    BUILD_RPATH "${SAIL_HOME}/lib;${LIBSOPHON_HOME}/lib;${OPENCV_HOME}/lib"
+    INSTALL_RPATH "${SAIL_HOME}/lib;${LIBSOPHON_HOME}/lib;${OPENCV_HOME}/lib")
+
 add_executable(gen_label_plates tools/gen_label_plates.cpp)
 target_link_libraries(gen_label_plates PRIVATE
     opencv_core opencv_imgproc opencv_imgcodecs opencv_freetype Threads::Threads)
 set_target_properties(gen_label_plates PROPERTIES
     BUILD_RPATH "${OPENCV_HOME}/lib"
     INSTALL_RPATH "${OPENCV_HOME}/lib")
+
