@@ -165,7 +165,13 @@ public:
             // small workers with no box at all on 1080p/4K channels.
             rt->config.people_deep = deep;
             rt->report_conf = pc;
-            rt->config.conf = std::min(pc, people_draw_conf_);
+            // Read the env here as well: the ctor env block runs after this
+            // loop, so relying on the member left AIDETECT_PEOPLE_DRAW_CONF
+            // without effect at construction time.
+            float draw_conf = people_draw_conf_;
+            if (const char* pcv = std::getenv("AIDETECT_PEOPLE_DRAW_CONF"))
+                draw_conf = std::max(0.05f, static_cast<float>(std::atof(pcv)));
+            rt->config.conf = std::min(pc, draw_conf);
             log_info(cfg_.task_id + " people base conf=" + std::to_string(pc) +
                      " draw_conf=" + std::to_string(rt->config.conf) +
                      " deep=" + (deep ? "1" : "0"));
@@ -1155,16 +1161,31 @@ private:
         const int xs[2] = {0, std::max(0, w - tw)};
         const int ys[2] = {0, std::max(0, h - th)};
         std::vector<Detection> dets;
+        int tile_hits[4] = {0, 0, 0, 0};
         for (int yi = 0; yi < 2; ++yi) {
             for (int xi = 0; xi < 2; ++xi) {
                 auto part = infer_detection_rect(rt, frame, handle, bmcv,
                                                  xs[xi], ys[yi], tw, th);
+                tile_hits[yi * 2 + xi] = static_cast<int>(part.size());
                 dets.insert(dets.end(), part.begin(), part.end());
             }
         }
         dets = nms(dets, 0.5f);
         rt.deep_dets = dets;
         rt.deep_ms = now;
+        // Runtime diagnostic: the offline tile_probe finds 0.55 on 测试_17
+        // frames while the running task reports nothing, so log the real
+        // frame/tile geometry and per-tile hit counts (empty rounds included).
+        if (rt.base_only && dets.empty() && now - rt.last_log_ms >= 10000) {
+            rt.last_log_ms = now;
+            log_info(cfg_.task_id + " deep diag frame=" + std::to_string(w) + "x" +
+                     std::to_string(h) + " tile=" + std::to_string(tw) + "x" +
+                     std::to_string(th) + " xy=" + std::to_string(xs[0]) + "," +
+                     std::to_string(ys[1]) + " hits=" + std::to_string(tile_hits[0]) +
+                     "/" + std::to_string(tile_hits[1]) + "/" +
+                     std::to_string(tile_hits[2]) + "/" + std::to_string(tile_hits[3]) +
+                     " conf=" + std::to_string(rt.config.conf));
+        }
         if (rt.base_only && !dets.empty() && now - rt.last_log_ms >= 5000) {
             rt.last_log_ms = now;
             float best = 0.f;
@@ -2960,7 +2981,13 @@ private:
             }
             rt->config.people_deep = deep;
             rt->report_conf = pc;
-            rt->config.conf = std::min(pc, people_draw_conf_);
+            // Read the env here as well: the ctor env block runs after this
+            // loop, so relying on the member left AIDETECT_PEOPLE_DRAW_CONF
+            // without effect at construction time.
+            float draw_conf = people_draw_conf_;
+            if (const char* pcv = std::getenv("AIDETECT_PEOPLE_DRAW_CONF"))
+                draw_conf = std::max(0.05f, static_cast<float>(std::atof(pcv)));
+            rt->config.conf = std::min(pc, draw_conf);
             log_info(tc.task_id + " people base conf=" + std::to_string(pc) +
                      " draw_conf=" + std::to_string(rt->config.conf) +
                      " deep=" + (deep ? "1" : "0"));
@@ -5143,6 +5170,9 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
+
+
 
 
 
