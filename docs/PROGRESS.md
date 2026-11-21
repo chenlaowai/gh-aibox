@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 74
+iteration: 75
 updated: 2026-11-21
 commit: -
 -->
@@ -9,6 +9,18 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 75 — 2026-11-21 — ISC 走生产同款 RTMP（不再是 RTSP）
+
+- **证据（生产盒子只读）**：`/data/app/Content/app.log` 里 ISC 通道**全部**是
+  `rtmp://10.10.69.250:1935/live/openUrl/...`（rtmp 26957 条，rtsp 0 条）；
+  我们用 `AIDETECT_ISC_PROTOCOL=rtsp`，而任务地址里还带 `protocol=rtsp`，
+  平台网关对 RTSP DESCRIBE 返回 500 → 通道长时间 connecting。
+- **实现**：`task.hpp` 里候选地址的协议改为**环境变量优先**（原先地址里有 protocol= 时忽略环境变量）。
+  部署 `AIDETECT_ISC_PROTOCOL=rtmp`。
+- **验证**：部署后部分通道已改用 rtmp；仍有 10 路 connecting，但生产盒子同一时刻
+  也有 **24 个通道** `Input/output error,-5` / `Connection timed out,-110` → 说明是上游
+  平台（10.10.69.250）自身不稳定，不是我们进程泄漏。
 
 ### 迭代 74 — 2026-11-21 — 4K 预览框错位、反光衣穿/不穿校准、推理输入池化（v1.1.3）
 

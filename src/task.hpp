@@ -4560,9 +4560,13 @@ private:
         // and hit the ISC 500/session limit on many cameras.
         std::string base_proto =
             cfg_.channel_address.find("protocol=rtmp") != std::string::npos ? "rtmp" : "rtsp";
+        // The production box streams every ISC channel over RTMP
+        // (rtmp://10.10.69.250:1935/live/openUrl/...); the platform's gateway
+        // answers RTSP DESCRIBE with 500, which left channels dark.  When the
+        // operator forces a protocol, it must win over the per-task address
+        // (the synced task config still carries protocol=rtsp).
         if (const char* p = std::getenv("AIDETECT_ISC_PROTOCOL"); p && *p)
-            if (cfg_.channel_address.find("protocol=") == std::string::npos)
-                base_proto = p;
+            base_proto = p;
         if (base_proto != "rtsp" && base_proto != "rtmp") base_proto = "rtsp";
         std::vector<std::pair<std::string, int>> cands;
         auto add = [&](const std::string& proto, int st) {
