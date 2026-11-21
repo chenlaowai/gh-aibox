@@ -1691,6 +1691,11 @@ private:
                 // upper-body crop; 0.95 separates them (production default 0.9
                 // was still inside the vest-wearer spread).
                 if (is_vest && need < 0.95f) need = 0.95f;
+                // Small crops are where the 4-head vest model still leaks: a
+                // 704x576 frame gives 0.90~0.98 "no vest" even on workers who
+                // clearly wear one (测试_18 right pair), while a real no-vest
+                // 4K worker scores exactly 1.000.  Demand 0.99 below 80 px.
+                if (is_vest && (p.x2 - p.x1) < 80.f && need < 0.99f) need = 0.99f;
                 float prob = classify(rt->spec->name == "helmet" ? 0.70f : 0.50f);
                 // Helmet: a second full-person crop recovers heads clipped by
                 // the top-70% box, but only runs for uncertain cases.
@@ -5145,8 +5150,11 @@ private:
     // A 4-head attribute classifier on a 30-40px-wide person crop is pure
     // noise (every worker comes back "no vest").  Production runs these on 4K
     // streams where a person is 200+ px; skip crops too small to classify.
-    int attr_min_crop_w_ = 40;
-    int attr_min_crop_h_ = 80;
+    // Below ~48 px wide the 4-head vest head cannot separate "wearing" from
+    // "not wearing" (测试_18: a 40 px worker in a yellow vest scores >=0.99
+    // "no vest"), so those crops are skipped instead of being mislabelled.
+    int attr_min_crop_w_ = 48;
+    int attr_min_crop_h_ = 96;
     int64_t max_alg_interval_ms_ = 0;    // largest per-algorithm interval
     int64_t person_grace_ms_ = 900;      // keep a label while its algo skips
     int64_t last_pvprof_ms_ = 0;         // preview path profiling throttle
@@ -5199,6 +5207,8 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
+
 
 
 
