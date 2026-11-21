@@ -88,6 +88,7 @@ int main(int argc, char** argv) {
     auto prop = [](float v) { return (v >= 0.0f && v <= 1.0f) ? v : 1.0f / (1.0f + std::exp(-v)); };
     std::vector<float> best((size_t)std::max(0, cols - 4), 0.0f);
     int hits = 0;
+    float bx1 = 0, by1 = 0, bx2 = 0, by2 = 0, bscore = -1.f, bcls = -1;
     for (int i = 0; i < n; ++i) {
         bool any = false;
         for (int c = 4; c < cols; ++c) {
@@ -97,10 +98,24 @@ int main(int argc, char** argv) {
             if (s >= conf) any = true;
         }
         if (any) ++hits;
+        for (int c = 4; c < cols; ++c) {
+            const float v = transposed ? p[(size_t)c * n + i] : p[(size_t)i * cols + c];
+            float s = prop(v);
+            if (s > bscore) {
+                bscore = s; bcls = c - 4;
+                bx1 = transposed ? p[(size_t)0 * n + i] : p[(size_t)i * cols + 0];
+                by1 = transposed ? p[(size_t)1 * n + i] : p[(size_t)i * cols + 1];
+                bx2 = transposed ? p[(size_t)2 * n + i] : p[(size_t)i * cols + 2];
+                by2 = transposed ? p[(size_t)3 * n + i] : p[(size_t)i * cols + 3];
+            }
+        }
     }
+    printf("top: cls=%.0f score=%.3f box=%.1f,%.1f,%.1f,%.1f (target %dx%d)\n", bcls,
+           bscore, bx1, by1, bx2, by2, nw, nh);
     printf("hits=%d classes:", hits);
     for (size_t c = 0; c < best.size(); ++c) printf(" c%zu=%.3f", c, best[c]);
     printf("\n");
     return 0;
 }
+
 

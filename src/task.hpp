@@ -1455,53 +1455,28 @@ private:
                     // Production draws a head box for every detected head: a
                     // compliant (helmet worn) detection is a plain blue head
                     // box, the violation one turns red after 5s.
-                    if (has_helmet && hbx2 > hbx1 && hby2 > hby1) {
-                        const int padx = (nw - tw) / 2;
-                        const int pady = (nh - th) / 2;
-                        if (r > 0) {
-                            Detection hb;
-                            hb.x1 = cx + (hbx1 - padx) / r;
-                            hb.y1 = cy + (hby1 - pady) / r;
-                            hb.x2 = cx + (hbx2 - padx) / r;
-                            hb.y2 = cy + (hby2 - pady) / r;
-                            hb.x1 = std::max(hb.x1, p.x1);
-                            hb.y1 = std::max(hb.y1, p.y1);
-                            hb.x2 = std::min(hb.x2, p.x2);
-                            hb.y2 = std::min(hb.y2, p.y2);
-                            if (hb.x2 - hb.x1 >= 6 && hb.y2 - hb.y1 >= 6) {
-                                hb.base_person = true;
-                                hb.class_id = -1;
-                                all.push_back(std::move(hb));
-                            }
-                        }
+                    //
+                    // The V3 model also fires a "person" class whose box covers
+                    // head+chest, and its helmet/no-helmet boxes can start above
+                    // the person box.  Mapping those straight to the frame drew
+                    // boxes that did not frame the head (the "人头框没框住头"
+                    // report).  Derive the head region from the person box
+                    // instead: centred, top 22% of the person height.
+                    const float head_w = pw * 0.64f;
+                    const float head_h = ph * 0.22f;
+                    Detection head_box = p;
+                    head_box.x1 = p.x1 + (pw - head_w) * 0.5f;
+                    head_box.x2 = head_box.x1 + head_w;
+                    head_box.y1 = p.y1;
+                    head_box.y2 = p.y1 + std::max(6.f, head_h);
+                    if (has_helmet) {
+                        Detection hb = head_box;
+                        hb.base_person = true;
+                        hb.class_id = -1;
+                        all.push_back(std::move(hb));
                     }
                     if (!has_no_helmet) continue;
-                    Detection d = p;
-                    // Production's 安全帽V3 is a head detector: the alarm box is
-                    // the detected head, not the whole person.  Map it from the
-                    // 256x256 letterboxed crop back to frame coordinates and
-                    // clamp it inside the person box so the tracker still has
-                    // the person anchor.
-                    {
-                        const int padx = (nw - tw) / 2;
-                        const int pady = (nh - th) / 2;
-                        if (r > 0 && hx2 > hx1 && hy2 > hy1) {
-                            float fx1 = cx + (hx1 - padx) / r;
-                            float fy1 = cy + (hy1 - pady) / r;
-                            float fx2 = cx + (hx2 - padx) / r;
-                            float fy2 = cy + (hy2 - pady) / r;
-                            fx1 = std::max(fx1, p.x1);
-                            fy1 = std::max(fy1, p.y1);
-                            fx2 = std::min(fx2, p.x2);
-                            fy2 = std::min(fy2, p.y2);
-                            if (fx2 - fx1 >= 8 && fy2 - fy1 >= 8) {
-                                d.x1 = fx1;
-                                d.y1 = fy1;
-                                d.x2 = fx2;
-                                d.y2 = fy2;
-                            }
-                        }
-                    }
+                    Detection d = head_box;
                     d.score = best_no;
                     d.class_id = rt->spec->target_id;
                     d.target = true;
