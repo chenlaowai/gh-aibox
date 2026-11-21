@@ -1547,10 +1547,15 @@ private:
                         p.y2 - p.y1 < attr_min_crop_h_)
                         continue;
                     float pw = p.x2 - p.x1, ph = p.y2 - p.y1;
-                    int cx = std::max(0, static_cast<int>(p.x1 - pw * 0.05f));
-                    int cy = std::max(0, static_cast<int>(p.y1 - ph * 0.05f));
-                    int cw = std::min(w - cx, static_cast<int>(pw * 1.10f));
-                    int ch = std::min(h - cy, static_cast<int>(ph * 1.10f));
+                    // RE: MinorBoatLifeJacket::boxesCropPolicy copies the source
+                    // person box and sets the three ratio bytes to 0x72 (114),
+                    // i.e. the crop is 114% of the person box.  boat_probe on
+                    // 测试_15 showed the "未穿救生衣" score is more stable at
+                    // 1.14 (0.95~0.99) than at 1.10 (0.87~0.90).
+                    int cx = std::max(0, static_cast<int>(p.x1 - pw * 0.07f));
+                    int cy = std::max(0, static_cast<int>(p.y1 - ph * 0.07f));
+                    int cw = std::min(w - cx, static_cast<int>(pw * 1.14f));
+                    int ch = std::min(h - cy, static_cast<int>(ph * 1.14f));
                     if (cw <= 8 || ch <= 8) continue;
                     float r = std::min(static_cast<float>(nw) / cw,
                                        static_cast<float>(nh) / ch);
