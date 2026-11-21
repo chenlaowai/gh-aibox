@@ -692,6 +692,24 @@ public:
 
     Json scheduler_stats() { return model_.stats(); }
 
+    // Graceful global teardown (used by the resource watchdog before the
+    // process exits).  Closing every decoder sends RTSP TEARDOWN so the
+    // upstream ISC session table is released; an abrupt _exit left the stale
+    // sessions behind and ISC then answered 500 to every channel until they
+    // timed out, which is exactly the "all channels dark" outage.
+    void stop_all() {
+        std::vector<std::shared_ptr<Task>> all;
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            for (auto& kv : tasks_) all.push_back(kv.second);
+            tasks_.clear();
+            used_.clear();
+        }
+        for (auto& t : all) t->stop();
+        for (auto& t : all) t->join();
+        log_info("stop_all: " + std::to_string(all.size()) + " tasks stopped");
+    }
+
     // After a container/process restart, tasks that the UI still shows as
     // running must be restored. The database is the source of truth.
     static std::string config_signature(const TaskConfig& tc) {

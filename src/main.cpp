@@ -149,8 +149,16 @@ int main(int argc, char** argv) {
             if (over_dmabuf || over_rss) {
                 log_warn("resource watchdog: dmabuf=" + std::to_string(dmabuf) +
                          " rss_mb=" + std::to_string(rss_mb) +
-                         " over limit, restarting process to release BM buffers");
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                         " over limit, stopping tasks then restarting process");
+                // Stop tasks first so every decoder is closed (RTSP TEARDOWN)
+                // and the upstream ISC session table is released.  Jumping
+                // straight to _exit left stale ISC sessions that made every
+                // channel answer 500 until they expired.
+                try {
+                    manager.stop_all();
+                } catch (...) {
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
                 ::_exit(0);
             }
         }

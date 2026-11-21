@@ -1371,6 +1371,8 @@ private:
                     float best_no = 0.0f, best_helmet = 0.0f;
                     // Head box of the best no-helmet detection, in crop space.
                     float hx1 = 0, hy1 = 0, hx2 = 0, hy2 = 0;
+                    // Head box of the best helmet (compliant) detection.
+                    float hbx1 = 0, hby1 = 0, hbx2 = 0, hby2 = 0;
                     for (size_t i = 0; i + 1 < t.data.size() / cols; ++i) {
                         const float* q = t.data.data() + i * cols;
                         // Output order is [未戴安全帽, 安全帽, 人员]; the
@@ -1378,7 +1380,10 @@ private:
                         // clearly helmeted workers as violations.
                         float s_no = prop(q[4]);
                         float s_helmet = prop(q[5]);
-                        if (s_helmet > best_helmet) best_helmet = s_helmet;
+                        if (s_helmet > best_helmet) {
+                            best_helmet = s_helmet;
+                            hbx1 = q[0]; hby1 = q[1]; hbx2 = q[2]; hby2 = q[3];
+                        }
                         if (s_helmet >= helmet_th) has_helmet = true;
                         if (s_no >= no_helmet_th) {
                             has_no_helmet = true;
@@ -1400,6 +1405,29 @@ private:
                     // old "prefer helmet when both are hot" rule suppressed
                     // genuine no-helmet detections (office white-shirt people
                     // scored no=0.809, helmet=1.0 and were skipped).
+                    // Production draws a head box for every detected head: a
+                    // compliant (helmet worn) detection is a plain blue head
+                    // box, the violation one turns red after 5s.
+                    if (has_helmet && hbx2 > hbx1 && hby2 > hby1) {
+                        const int padx = (nw - tw) / 2;
+                        const int pady = (nh - th) / 2;
+                        if (r > 0) {
+                            Detection hb;
+                            hb.x1 = cx + (hbx1 - padx) / r;
+                            hb.y1 = cy + (hby1 - pady) / r;
+                            hb.x2 = cx + (hbx2 - padx) / r;
+                            hb.y2 = cy + (hby2 - pady) / r;
+                            hb.x1 = std::max(hb.x1, p.x1);
+                            hb.y1 = std::max(hb.y1, p.y1);
+                            hb.x2 = std::min(hb.x2, p.x2);
+                            hb.y2 = std::min(hb.y2, p.y2);
+                            if (hb.x2 - hb.x1 >= 6 && hb.y2 - hb.y1 >= 6) {
+                                hb.base_person = true;
+                                hb.class_id = -1;
+                                all.push_back(std::move(hb));
+                            }
+                        }
+                    }
                     if (!has_no_helmet) continue;
                     Detection d = p;
                     // Production's 安全帽V3 is a head detector: the alarm box is
@@ -1654,15 +1682,15 @@ private:
                 // People boxes can legitimately be 30%+ of a 4K frame; the
                 // old head-box size filter skipped the foreground smoker.
                 if (cw < 16 || ch < 16) continue;
-                // Production behaviour crop is the majorId=1 person box,
-                // not a head box. A head-only crop missed the cigarette hand
-                // and made a bent background worker look like a smoker.
+                // Production behaviour crop is the upper body (head + torso):
+                // a full-body crop shrinks the cigarette/hand to a few pixels
+                // and the model then fires on arbitrary poses.
                 {
                     int bw = std::max(8, cw), bh = std::max(8, ch);
                     cx = std::max(0, cx - static_cast<int>(bw * 0.05f));
                     cy = std::max(0, cy - static_cast<int>(bh * 0.05f));
                     cw = std::min(w - cx, static_cast<int>(bw * 1.10f));
-                    ch = std::min(h - cy, static_cast<int>(bh * 1.10f));
+                    ch = std::min(h - cy, static_cast<int>(bh * 0.60f));
                 }
                 if (cw <= 8 || ch <= 8) continue;
                 float r = std::min(static_cast<float>(net_w) / cw,
@@ -4954,7 +4982,7 @@ private:
     bool preview_has_work_ = false;
     std::atomic<bool> preview_busy_{false};
     // Inference demand controls (see constructor).
-    float people_draw_conf_ = 0.5f;      // base person boxes/crops below report_conf
+    float people_draw_conf_ = 0.8f;      // base person boxes/crops threshold (production 0.8)
     int detect_min_interval_ms_ = 350;   // per-task detect cadence cap (2.9 Hz)
     int people_deep_interval_ms_ = 1200;  // 4-tile deep people pass cadence
     size_t attr_models_per_round_ = 1000;  // 1000 = every crop algorithm each round
@@ -5017,6 +5045,7 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
 
 
 
