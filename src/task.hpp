@@ -1328,9 +1328,11 @@ private:
                 };
                 for (auto& p : crop_persons) {
                     if (p.class_id != 0 || p.x2 <= p.x1 || p.y2 <= p.y1) continue;
-                    if (p.x2 - p.x1 < attr_min_crop_w_ ||
-                        p.y2 - p.y1 < attr_min_crop_h_)
-                        continue;
+                    // V3 is a head *detector*, not a classifier: production draws
+                    // a head box for every detected head, so only a minimal
+                    // person box is required (the 48px classifier gate hid the
+                    // head boxes on 704x576 channels).
+                    if (p.x2 - p.x1 < 24 || p.y2 - p.y1 < 48) continue;
                     // Production helmet crop: person box top 70%, like the
                     // 4-class helmet model. V3 class 0 = 未戴安全帽,
                     // class 1 = 安全帽, class 2 = 人员.
@@ -1766,7 +1768,14 @@ private:
                 d.score = best_score;
                 d.class_id = bc;
                 d.target = true;
-                d.label = rt->display_label.empty() ? rt->spec->report_content : rt->display_label;
+                // Show the class that actually fired (抽烟 / 打电话 / 玩手机).
+                // The old combined label made a phone call read as "抽烟", which
+                // looked like a smoking false alarm on 测试_1/18.
+                static const char* kBehLabel[3] = {"抽烟", "打电话", "玩手机"};
+                d.label = (bc >= 0 && bc < 3)
+                              ? kBehLabel[bc]
+                              : (rt->display_label.empty() ? rt->spec->report_content
+                                                           : rt->display_label);
                 beh.push_back(d);
             }
             beh = dedup_dets(std::move(beh));
@@ -5114,6 +5123,8 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
+
 
 
 
