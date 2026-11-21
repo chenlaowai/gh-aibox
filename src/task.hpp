@@ -1627,11 +1627,19 @@ private:
                     return std::exp(t.data[std::max(0, ac)]) / (sum + 1e-9f);
                 };
                 float need = rt->config.attr_thresh > 0 ? rt->config.attr_thresh : rt->spec->attr_thresh;
-                // Production's MinorVest crop policy keeps the whole person box
-                // (RE: CropPolicy 0x20/0x22 = 255/255, i.e. 100% width/height);
-                // the old top-30% crop only showed the head, so every worker
-                // was classified as "no vest".  Helmet still uses the upper 70%.
-                float prob = classify(rt->spec->name == "helmet" ? 0.70f : 1.00f);
+                // Measured separation on 4K ground truth (attr_probe):
+                //   no-vest workers (测试_2)      upper-body 50% -> head0 = 1.00 / 1.00
+                //   vest workers    (测试_6/7)    upper-body 50% -> head0 = 0.50 / 0.71
+                // A full-body crop gives 1.00 for BOTH (no separation), which is
+                // why every worker used to be "未穿反光衣".  Use the upper body
+                // (head + torso, where the vest is) and production's 0.9
+                // "未穿反光背心阈值" as a floor.
+                const bool is_vest = rt->spec->name == "vest";
+                // Measured: no-vest 4K workers 1.00, vest wearers 0.80~0.90 at the
+                // upper-body crop; 0.95 separates them (production default 0.9
+                // was still inside the vest-wearer spread).
+                if (is_vest && need < 0.95f) need = 0.95f;
+                float prob = classify(rt->spec->name == "helmet" ? 0.70f : 0.50f);
                 // Helmet: a second full-person crop recovers heads clipped by
                 // the top-70% box, but only runs for uncertain cases.
                 if (prob >= 0 && prob < need && rt->spec->name == "helmet") {
@@ -1649,8 +1657,17 @@ private:
             attrs = dedup_dets(std::move(attrs));
             if (!attrs.empty() && now_ms() - rt->last_log_ms >= 5000) {
                 rt->last_log_ms = now_ms();
+                const auto& ad = attrs.front();
                 log_info(cfg_.task_id + " model=" + rt->spec->name +
-                         " detections=" + std::to_string(attrs.size()));
+                         " detections=" + std::to_string(attrs.size()) +
+                         " box=" + std::to_string(static_cast<int>(ad.x1)) + "," +
+                         std::to_string(static_cast<int>(ad.y1)) + "," +
+                         std::to_string(static_cast<int>(ad.x2)) + "," +
+                         std::to_string(static_cast<int>(ad.y2)) +
+                         " frame=" + std::to_string(frame.width()) + "x" +
+                         std::to_string(frame.height()) +
+                         " fw=" + std::to_string(frame_w_) + " fh=" +
+                         std::to_string(frame_h_));
             }
             bool fired = update_alarm(*rt, attrs, frame, bmcv);
             for (auto& d : attrs) {
@@ -2293,8 +2310,12 @@ private:
             canvas = mat;
         }
         draw_roi_cv(canvas);
-        float sx = static_cast<float>(out_w) / std::max(1, frame_w_);
-        float sy = static_cast<float>(out_h) / std::max(1, frame_h_);
+        // Scale from the frame we were actually handed, not from frame_w_:
+        // the preview thread passes the already-scaled preview image, and
+        // scaling again by out_w/frame_w_ shrank 4K labels/boxes to the
+        // top-left quarter of the picture.
+        float sx = static_cast<float>(out_w) / std::max(1, frame.width());
+        float sy = static_cast<float>(out_h) / std::max(1, frame.height());
         std::vector<std::pair<std::string, cv::Point>> label_draws;
         std::vector<std::pair<cv::Mat, cv::Point>> plate_draws;
         std::vector<cv::Rect> label_rects;
@@ -2862,6 +2883,7 @@ private:
             } catch (const std::exception& e) {
                 log_error(cfg_.task_id + " async detect: " + e.what());
             }
+            if (job.release) job.release();
         }
     }
     void apply_pending_config() {
@@ -3056,19 +3078,55 @@ private:
                 // single-decoder mode. Running detect() inline used to stall the
                 // decode loop for hundreds of ms under 30 tasks, which capped
                 // the live preview at 2~5fps even though encoding was fast.
-                sail::BMImage copy(handle, frame.height(), frame.width(),
-                                   frame.format(), DATA_TYPE_EXT_1N_BYTE);
-                if (bmcv.image_copy_to(frame, copy, 0, 0) == 0) {
-                    InferJob job;
-                    job.img = std::make_shared<sail::BMImage>(std::move(copy));
-                    job.ts = frame_ts;
-                    std::lock_guard<std::mutex> lk(infer_mu_);
-                    // Keep only the newest frame: a two-deep FIFO made the
-                    // detector work on an older image while preview showed the
-                    // current one, which is the other half of the box lag.
-                    while (!infer_q_.empty()) infer_q_.pop_front();
-                    infer_q_.push_back(std::move(job));
-                    infer_cv_.notify_one();
+                //
+                // Production pools these buffers.  Allocating a fresh BMImage
+                // every round leaked dmabuf handles (20h: 130 -> 1003, which
+                // tripped the resource watchdog).  Use a per-task double buffer
+                // instead; a buffer is only reused after the infer thread has
+                // finished with it.
+                const int fw = frame.width(), fh = frame.height();
+                if (!infer_buf_[0] || infer_buf_w_ != fw || infer_buf_h_ != fh ||
+                    infer_buf_fmt_ != frame.format()) {
+                    for (int i = 0; i < 2; ++i) {
+                        infer_buf_busy_[i] = false;
+                        infer_buf_[i] = std::make_shared<sail::BMImage>(
+                            handle, fh, fw, frame.format(), DATA_TYPE_EXT_1N_BYTE);
+                    }
+                    infer_buf_w_ = fw;
+                    infer_buf_h_ = fh;
+                    infer_buf_fmt_ = frame.format();
+                    infer_buf_idx_ = 0;
+                }
+                int slot = -1;
+                for (int k = 0; k < 2; ++k) {
+                    const int i = (infer_buf_idx_ + k) % 2;
+                    if (!infer_buf_busy_[i].exchange(true)) {
+                        slot = i;
+                        break;
+                    }
+                }
+                if (slot >= 0) {
+                    infer_buf_idx_ = (slot + 1) % 2;
+                    if (bmcv.image_copy_to(frame, *infer_buf_[slot], 0, 0) == 0) {
+                        InferJob job;
+                        job.img = infer_buf_[slot];
+                        job.ts = frame_ts;
+                        job.release = [this, slot] {
+                            infer_buf_busy_[slot].store(false);
+                        };
+                        std::lock_guard<std::mutex> lk(infer_mu_);
+                        // Keep only the newest frame: a two-deep FIFO made the
+                        // detector work on an older image while preview showed
+                        // the current one, which is the other half of the box lag.
+                        while (!infer_q_.empty()) {
+                            if (infer_q_.front().release) infer_q_.front().release();
+                            infer_q_.pop_front();
+                        }
+                        infer_q_.push_back(std::move(job));
+                        infer_cv_.notify_one();
+                    } else {
+                        infer_buf_busy_[slot].store(false);
+                    }
                 }
             }
         }
@@ -4886,6 +4944,9 @@ private:
     struct InferJob {
         std::shared_ptr<sail::BMImage> img;
         int64_t ts = 0;
+        // Returns the pooled input buffer to the producer; called by the infer
+        // thread once detect() is done with this frame.
+        std::function<void()> release;
     };
     TaskConfig cfg_;
     std::mutex pending_cfg_mu_;
@@ -4911,6 +4972,14 @@ private:
     std::thread infer_thread_;
     std::mutex infer_mu_;
     std::condition_variable infer_cv_;
+    // Pooled inference input buffers (see process_frame).  A fresh BMImage per
+    // detect round leaked dmabuf handles (20h: 130 -> 1003), so two buffers are
+    // allocated once and recycled after the infer thread releases them.
+    std::shared_ptr<sail::BMImage> infer_buf_[2];
+    std::atomic<bool> infer_buf_busy_[2]{{false}, {false}};
+    int infer_buf_idx_ = 0;
+    int infer_buf_w_ = 0, infer_buf_h_ = 0;
+    int infer_buf_fmt_ = -1;
     std::deque<InferJob> infer_q_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> debug_alarm_{false};
@@ -5045,6 +5114,8 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
+
 
 
 
