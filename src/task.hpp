@@ -1106,11 +1106,35 @@ private:
                                              net_w, net_h, pad,
                                              bmcv_resize_algorithm::BMCV_INTER_LINEAR) != 0)
             return {};
-        bmcv.convert_to(*resized, *pre,
-                        std::make_tuple(
-                            std::make_pair(rt.spec->alpha, rt.spec->beta),
-                            std::make_pair(rt.spec->alpha, rt.spec->beta),
-                            std::make_pair(rt.spec->alpha, rt.spec->beta)));
+        // NV12(limited range) -> RGB must go through convert_format: the direct
+        // convert_to path keeps studio-swing RGB (16..235) and made every person
+        // score ~0.2 lower than the same frame normalised from a full-range
+        // JPEG (测试_17: runtime 0.35~0.43 vs offline 0.57).  convert_format is
+        // the same CSC the preview uses, so the model now sees full-range RGB
+        // like production does.
+        bool used_csc = false;
+        if (!std::getenv("AIDETECT_INPUT_LEGACY_CSC")) {
+            try {
+                sail::BMImage rgb = bmcv.convert_format(*resized, FORMAT_RGB_PACKED);
+                if (rgb.width() == net_w && rgb.height() == net_h) {
+                    bmcv.convert_to(rgb, *pre,
+                                    std::make_tuple(
+                                        std::make_pair(rt.spec->alpha, rt.spec->beta),
+                                        std::make_pair(rt.spec->alpha, rt.spec->beta),
+                                        std::make_pair(rt.spec->alpha, rt.spec->beta)));
+                    used_csc = true;
+                }
+            } catch (const std::exception& e) {
+                log_warn(cfg_.task_id + " csc rgb: " + e.what());
+            }
+        }
+        if (!used_csc) {
+            bmcv.convert_to(*resized, *pre,
+                            std::make_tuple(
+                                std::make_pair(rt.spec->alpha, rt.spec->beta),
+                                std::make_pair(rt.spec->alpha, rt.spec->beta),
+                                std::make_pair(rt.spec->alpha, rt.spec->beta)));
+        }
         InferOutput out = scheduler_.infer(*rt.spec, *pre, handle, bmcv);
         std::vector<Detection> dets;
         if (rt.spec->type == ModelType::Damo) {
