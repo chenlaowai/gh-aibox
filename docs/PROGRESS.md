@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 75
+iteration: 76
 updated: 2026-11-21
 commit: -
 -->
@@ -9,6 +9,21 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 76 — 2026-11-21 — 生产裁剪策略 REA + dmabuf 基线实测
+
+- **REA（只读反编译 `libEdgeSystem.so`）新证据**：
+  - `PeopleMethod::imageCropPolicy()` **直接 return 0**（人形检测不做裁剪，整帧/整瓦片推理）；
+  - `PeopleMethod::onMethodModelRequired()` 填充 ModelAttr：`+0x158`=类型、`+0x17c`=8、
+    三个 scale 字段 `+0x16c/0x170/0x174 = 1.0f`，随后按 `+0x208` 的 batch 数扩容；
+  - `MinorBoatLifeJacket::boxesCropPolicy()`：判 AlgoBit `0x98`，裁剪矩形 = 源人形框，
+    crop type = 0，三个比例字节 `+0x20/+0x21/+0x22 = 0x72 (114)`，
+    即**救生衣裁剪 = 源人形框的 114%**（我们现在是 1.10，差 4 个百分点，待用正例再验证是否改为 1.14）。
+- **dmabuf 实测（池化后）**：v1.1.9 启动 10 分钟第一次采样 `dmabuf=844 rss_mb=408`；
+  用 `sudo ls -l /proc/<pid>/fd | grep -c dmabuf` 复核 17:46 = **846**，2 分钟内基本不变
+  → 说明 844 主要是 36 路解码器 + 各任务池化帧的**稳态占用**，不是每轮泄漏；
+  需要数小时趋势才能最终确认（KI-052 继续观察）。
+- **工具**：`tools/attr_probe`（人形检测 + 任意分类模型，支持 rect 模式）已成为裁剪/阈值校准的标准手段。
 
 ### 迭代 75 — 2026-11-21 — ISC 走生产同款 RTMP（不再是 RTSP）
 
