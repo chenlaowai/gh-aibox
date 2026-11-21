@@ -1,5 +1,5 @@
 <!-- pm:meta
-iteration: 78
+iteration: 79
 updated: 2026-11-21
 commit: -
 -->
@@ -9,6 +9,23 @@ commit: -
 > 只追加，不修改旧条目；最新在最上面。
 > 一条 = 一次可验证的交付，不是「今天工作了 6 小时」。
 > 「验证」必须写命令 + 真实结果，只写「测试通过」等于没写。
+
+### 迭代 79 — 2026-11-21 — ISC 断流定位为上游媒体服务器故障（非我们代码）
+
+- **直接调用平台接口**（`POST /artemis/api/video/v2/cameras/previewURLs`，同一 appKey/签名）对一个
+  connecting 通道的相机：
+  - `rtmp streamType=1` → `code=0 success`，返回 `rtmp://10.10.69.250:1935/live/openUrl/fUgAyo8`
+  - `rtmp streamType=0` → 同样 success
+  - `rtsp streamType=1` → `rtsp://10.10.69.250:554/openUrl/fUSlcGI`
+  → **URL 解析完全正常**，不是签名/协议/会话池问题。
+- **在容器内用纯 ffmpeg 拉这三个 URL**：
+  - rtmp：`Input/output error`
+  - rtsp（tcp）：`Invalid data found when processing input`
+  → 平台发得出 URL，但**媒体服务器当前不供流**；生产盒子同一时刻日志里也是
+  `Chn:N Open Input Source Input/output error,-5` / `Connection timed out,-110`（24 个通道）。
+- 结论：10 路 connecting 是**上游平台故障**；我们的 ISC 解析/重试/错误上报链路工作正常
+  （RTMP 对齐生产、优雅释放会话、按退避重连）。
+- **dmabuf**：18:23 实测 **837**（17:58 为 841）→ 池化后继续稳定、无增长。
 
 ### 迭代 78 — 2026-11-21 — 小目标出框实验（0.5+形状门）→ 回滚到 0.8
 
