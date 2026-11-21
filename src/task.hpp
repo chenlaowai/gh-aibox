@@ -3906,6 +3906,17 @@ private:
             std::vector<Detection> base_boxes;
             base_boxes.reserve(base_persons.size());
             for (auto& p : base_persons) {
+                // Shape gate for the low-confidence (0.5~0.8) draw-only boxes:
+                // a distant worker is a tall thin box, while the false
+                // positives people_big fires on 4K roof/kerb edges are flat or
+                // wide.  This lets small targets show a box without bringing
+                // back the "框乱飞" junk.
+                if (p.score < 0.8f) {
+                    const float bw = p.x2 - p.x1, bh = p.y2 - p.y1;
+                    if (bh < 24.f) continue;
+                    const float ar = bw / std::max(1.f, bh);
+                    if (ar < 0.12f || ar > 0.9f) continue;
+                }
                 Detection b = p;
                 b.base_person = true;
                 b.target = false;
@@ -5064,7 +5075,12 @@ private:
     bool preview_has_work_ = false;
     std::atomic<bool> preview_busy_{false};
     // Inference demand controls (see constructor).
-    float people_draw_conf_ = 0.8f;      // base person boxes/crops threshold (production 0.8)
+    // Draw-only person threshold.  Kept at the production 0.8: the runtime
+    // deep pass reports no box at all on 测试_17 even at 0.5 while the offline
+    // tile_probe finds 0.55 on the same frames, so lowering it only re-enabled
+    // the 4K junk boxes without gaining the distant worker.  Next: instrument
+    // the deep pass (tile rects + counts) to explain that discrepancy.
+    float people_draw_conf_ = 0.8f;
     int detect_min_interval_ms_ = 350;   // per-task detect cadence cap (2.9 Hz)
     int people_deep_interval_ms_ = 1200;  // 4-tile deep people pass cadence
     size_t attr_models_per_round_ = 1000;  // 1000 = every crop algorithm each round
@@ -5127,6 +5143,9 @@ private:
     std::atomic<bool> font_ok_{false};
 };
 }  // namespace aidetect
+
+
+
 
 
 
